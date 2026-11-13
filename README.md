@@ -1,7 +1,7 @@
 # 💡 AI Ideas Lab
 
-> Rapid prototyping and experimental pipeline repository for cutting-edge AI research.  
-> 신규 AI 아이디어 구체화부터 베이스라인 아키텍처 구현, GPU 벤치마크 실험 및 정량 평가까지 이어지는 신속 실험 파이프라인 저장소입니다.
+> Rigorous research and experimental benchmark repository for cutting-edge AI architectures.  
+> 인공지능 신규 아키텍처 가설 수립부터 수학적 모델링, 심층 벤치마크 실증 및 통계적 검증까지 체계적으로 수행하는 연구 저장소입니다.
 
 ---
 
