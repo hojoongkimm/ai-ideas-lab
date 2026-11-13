@@ -1,8 +1,5 @@
 """Evaluation metrics for regression accuracy, feature selection precision/recall/F1,
 and ANOVA variance attribution.
-
-Author: Ho-joong Kim (hojoongkimm) & Pickle
-Repository: ai-ideas-lab
 """
 
 import numpy as np

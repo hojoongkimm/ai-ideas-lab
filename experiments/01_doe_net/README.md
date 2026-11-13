@@ -1,7 +1,6 @@
 # 🧪 Experiment 01: DOENet (Design of Experiments Neural Network)
 
 > **DOENet: Differentiable Orthogonal Factor Screening and Functional ANOVA for High-Dimensional Deep Learning**  
-> **Authors:** Ho-joong Kim (`@hojoongkimm`) & Pickle  
 > **Target Venues:** NeurIPS, ICML, KDD, IEEE Transactions on Knowledge and Data Engineering (TKDE) / IEEE T-ASE
 
 ---

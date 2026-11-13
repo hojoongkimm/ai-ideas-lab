@@ -1,7 +1,4 @@
 """Baseline deep learning models for comparative benchmarking and ablation studies.
-
-Author: Ho-joong Kim (hojoongkimm) & Pickle
-Repository: ai-ideas-lab
 """
 
 import torch

@@ -1,8 +1,5 @@
 """DOENet: Differentiable Orthogonal Factor Screening and Functional ANOVA
 for High-Dimensional Deep Learning.
-
-Author: Ho-joong Kim (hojoongkimm) & Pickle
-Repository: ai-ideas-lab
 """
 
 import math
