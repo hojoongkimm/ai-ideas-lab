@@ -43,3 +43,4 @@ ai-ideas-lab/
 - **Python**: 3.10+
 - **Deep Learning Framework**: PyTorch 2.0+ with CUDA
 - **Workflow Tools**: VS Code Remote-SSH, Claude Code CLI, GitHub
+

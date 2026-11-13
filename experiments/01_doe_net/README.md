@@ -29,41 +29,76 @@ In high-dimensional tabular, genomic, and industrial cyber-physical sensor data 
 ## 📐 2. Mathematical Formulation & Architecture
 
 ### A. Differentiable Hard Concrete Factor Screening
-For input $x \in \mathbb{R}^P$, we assign a continuous relaxation of binary feature inclusion gates $z_i \in \{0, 1\}$ using the Hard Concrete distribution (Louizos et al., ICLR 2018):
-$$u_i \sim \text{Uniform}(0, 1)$$
-$$s_i = \sigma\left( \frac{\log u_i - \log(1 - u_i) + \log \alpha_i}{\tau} \right)$$
-$$\bar{s}_i = \text{clamp}\left( s_i (\zeta - \gamma) + \gamma, 0, 1 \right)$$
-$$\tilde{x} = x \odot \bar{s}$$
-where $\gamma = -0.1, \zeta = 1.1$ stretch the support of the distribution to include exact $0$ and $1$ with non-zero probability mass.
+For an input vector $x \in \mathbb{R}^P$, we assign a continuous relaxation of binary feature inclusion gates $z_i \in \{0, 1\}$ using the Hard Concrete distribution (Louizos et al., ICLR 2018):
 
-**Expected $L_0$ Norm Regularization:**
+$$
+u_i \sim \text{Uniform}(0, 1)
+$$
+
+$$
+s_i = \sigma\left( \frac{\log u_i - \log(1 - u_i) + \log \alpha_i}{\tau} \right)
+$$
+
+$$
+\bar{s}_i = \text{clamp}\left( s_i (\zeta - \gamma) + \gamma, 0, 1 \right)
+$$
+
+$$
+\tilde{x} = x \odot \bar{s}
+$$
+
+where $\gamma = -0.1$ and $\zeta = 1.1$ stretch the support of the distribution to include exact $0$ and $1$ with non-zero probability mass.
+
+**Expected $L_0$ Norm Regularization:**  
 The expected number of active factors has an exact closed-form differentiable expression:
-$$\mathcal{L}_{L_0}(\log \alpha) = \sum_{j=1}^P \mathbb{P}(\bar{s}_j > 0) = \sum_{j=1}^P \sigma\left( \log \alpha_j - \tau \log(-\gamma / \zeta) \right)$$
+
+$$
+\mathcal{L}_{L_0}(\log \alpha) = \sum_{j=1}^P \mathbb{P}(\bar{s}_j > 0) = \sum_{j=1}^P \sigma\left( \log \alpha_j - \tau \log(-\gamma / \zeta) \right)
+$$
+
 An exponential temperature annealing schedule $\tau_t = \max(\tau_{\min}, \tau_0 \cdot \exp(-\kappa t))$ guarantees continuous gradient propagation early in training and discrete factor pruning upon convergence.
 
 ### B. DOE Orthogonal Factor Regularization
 In traditional Design of Experiments (DOE), **Orthogonal Arrays ($L_N(s^k)$)** ensure that factor columns have zero covariance, enabling independent estimation of main effects without confounding. To instill this principle into deep networks:
-$$\mathcal{L}_{\text{ortho}}(W_{\text{proj}}) = \frac{1}{K} \| W_{\text{proj}} W_{\text{proj}}^\top - I_K \|_F^2$$
+
+$$
+\mathcal{L}_{\text{ortho}}(W_{\text{proj}}) = \frac{1}{K} \| W_{\text{proj}} W_{\text{proj}}^\top - I_K \|_F^2
+$$
+
 where $W_{\text{proj}} \in \mathbb{R}^{K \times P}$ projects high-dimensional inputs onto $K$ orthogonal factor subspaces. This penalty penalizes co-selection of collinear features and forces the network to retain non-redundant informative dimensions.
 
 ### C. Hierarchical Functional ANOVA with Strong Heredity
 Under Functional ANOVA decomposition (Sobol, 1993), an arbitrary integrable function $f(x)$ is uniquely decomposed as:
-$$f(x) = f_0 + \sum_{i} f_i(x_i) + \sum_{i < j} f_{ij}(x_i, x_j) + f_{\text{residual}}(x)$$
-subject to the orthogonality and zero-mean conditions:
-$$\mathbb{E}[f_i(X_i)] = 0, \quad \mathbb{E}[f_{ij}(X_i, X_j) \mid X_i] = 0$$
+
+$$
+f(x) = f_0 + \sum_{i} f_i(x_i) + \sum_{i < j} f_{ij}(x_i, x_j) + f_{\text{residual}}(x)
+$$
+
+subject to the orthogonality and zero-mean conditions: $\mathbb{E}[f_i(X_i)] = 0$ and $\mathbb{E}[f_{ij}(X_i, X_j) \mid X_i] = 0$.
 
 In DOENet:
+
 1. **Main Effects:** Modeled via parallel 1D nonlinear subnets with batch zero-mean centering:
-   $$\hat{f}_i(x_i) = f_i(\tilde{x}_i) - \frac{1}{B}\sum_{b=1}^B f_i(\tilde{x}_{b,i})$$
-2. **Strong Heredity Gating:** In factorial design theory (Chipman, 1996; Wu & Hamada, 2009), an interaction effect $x_i x_j$ can only be active if **both** parent factors have significant main effects:
-   $$m_{ij} = \bar{s}_i \cdot \bar{s}_j$$
-   We parameterize pairwise interactions via low-rank bilinear factorization scaled by the heredity mask:
-   $$f_{\text{inter}}(\tilde{x}) = \sum_{r=1}^R (u_r^\top \tilde{x})(v_r^\top \tilde{x}) \cdot \text{HeredityGate}$$
-   This bounds interaction exploration from $O(P^2)$ down to $O(K^2)$ where $K = \sum_j \mathbf{1}(\bar{s}_j > 0) \ll P$.
+
+$$
+\hat{f}_i(x_i) = f_i(\tilde{x}_i) - \frac{1}{B}\sum_{b=1}^B f_i(\tilde{x}_{b,i})
+$$
+
+2. **Strong Heredity Gating:** In factorial design theory (Chipman, 1996; Wu & Hamada, 2009), an interaction effect $x_i x_j$ can only be active if **both** parent factors have significant main effects: $m_{ij} = \bar{s}_i \cdot \bar{s}_j$. We parameterize pairwise interactions via low-rank bilinear factorization scaled by the heredity mask:
+
+$$
+f_{\text{inter}}(\tilde{x}) = \sum_{r=1}^R (u_r^\top \tilde{x})(v_r^\top \tilde{x}) \cdot (\bar{s} \bar{s}^\top)
+$$
+
+This bounds interaction exploration from $O(P^2)$ down to $O(K^2)$ where $K = \sum_j \mathbf{1}(\bar{s}_j > 0) \ll P$.
+
 3. **Deep Residual Head:** A deep MLP captures multi-way higher-order interactions ($>2$) on the screened representation.
 
 ### D. Unified End-to-End Objective
-$$\min_{\Theta} \mathcal{L}_{\text{task}}(y, \hat{y}) + \lambda_{\text{sparse}} \mathcal{L}_{L_0}(\log \alpha) + \lambda_{\text{ortho}} \mathcal{L}_{\text{ortho}}(W_{\text{proj}})$$
+
+$$
+\min_{\Theta} \mathcal{L}_{\text{task}}(y, \hat{y}) + \lambda_{\text{sparse}} \mathcal{L}_{L_0}(\log \alpha) + \lambda_{\text{ortho}} \mathcal{L}_{\text{ortho}}(W_{\text{proj}})
+$$
 
 ---
 
@@ -93,3 +128,4 @@ pip install -r requirements.txt
 # Run complete 5-seed benchmark with statistical hypothesis testing
 python train_benchmark.py --dim 500 --samples 2500 --epochs 80 --num_seeds 5
 ```
+
