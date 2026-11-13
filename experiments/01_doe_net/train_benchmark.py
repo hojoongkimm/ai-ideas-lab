@@ -1,21 +1,22 @@
-"""Benchmark Training Pipeline: DOENet vs. Deep Baselines on High-Dimensional Data.
+"""Benchmark Training Pipeline with Multi-Seed Cross-Validation & Statistical Significance Testing.
 
-Compares:
-1. DOENet (Ours: Differentiable Orthogonal Screening + Functional ANOVA)
-2. GatedMLP (Ablation: Feature Gate without Orthogonality & ANOVA)
-3. L1SparseMLP (Baseline: L1 Regularized Linear Skip)
-4. StandardMLP (Baseline: Vanilla Deep MLP)
+Evaluates DOENet against deep baselines across multiple random seeds, reporting:
+- Mean +/- Std on Test RMSE, Test R^2, Feature Selection Precision, Recall, F1-Score, FDP
+- Paired Student's t-test (p-value) vs. Baselines to establish statistical significance
+- Empirical ANOVA Variance Attribution (Main vs. Interaction vs. Deep Residual)
 
 Usage:
-    python train_benchmark.py --dim 500 --epochs 80 --batch_size 64
+    python train_benchmark.py --dim 500 --epochs 80 --num_seeds 5
 """
 
 import argparse
 import json
 import time
+import math
+import numpy as np
+import scipy.stats as stats
 import torch
 import torch.optim as optim
-import numpy as np
 
 from models.doe_net import DOENet
 from models.baselines import StandardMLP, L1SparseMLP, GatedMLP_Ablation
@@ -23,22 +24,33 @@ from datasets.synthetic_highdim import get_dataloaders
 from utils.metrics import compute_regression_metrics, compute_feature_selection_metrics
 
 
-def train_epoch(model, loader, optimizer, model_type, lambda_sparse=1e-3, lambda_ortho=1e-2, device='cpu'):
+def get_temperature(epoch, max_epochs, t_start=0.66, t_min=0.1):
+    """Exponential temperature annealing schedule for discrete gate convergence."""
+    decay = math.log(t_min / t_start) / max_epochs
+    return max(t_min, t_start * math.exp(decay * epoch))
+
+
+def train_epoch(model, loader, optimizer, model_type, epoch, max_epochs,
+                lambda_sparse=2e-3, lambda_ortho=1e-2, device='cpu'):
     model.train()
     total_loss = 0.0
+    temp = get_temperature(epoch, max_epochs)
+    
     for X_b, y_b in loader:
         X_b, y_b = X_b.to(device), y_b.to(device)
         optimizer.zero_grad()
         
-        y_pred, _ = model(X_b)
-        
         if model_type == 'doenet':
+            y_pred, _ = model(X_b, current_temperature=temp)
             loss_dict = model.compute_loss(y_pred, y_b, lambda_sparse=lambda_sparse, lambda_ortho=lambda_ortho)
         elif model_type == 'gated_mlp':
+            y_pred, _ = model(X_b)
             loss_dict = model.compute_loss(y_pred, y_b, lambda_sparse=lambda_sparse)
         elif model_type == 'l1_sparse':
+            y_pred, _ = model(X_b)
             loss_dict = model.compute_loss(y_pred, y_b, lambda_l1=lambda_sparse)
         else:
+            y_pred, _ = model(X_b)
             loss_dict = model.compute_loss(y_pred, y_b)
             
         loss = loss_dict['total_loss']
@@ -68,8 +80,8 @@ def evaluate(model, loader, device='cpu'):
 def extract_selected_features(model, model_type, n_features, threshold=0.1):
     model.eval()
     if model_type == 'doenet':
-        info = model.get_feature_importance()
-        selected = [i for i, g in enumerate(info['gates']) if g > threshold]
+        info = model.get_feature_importance(threshold=threshold)
+        selected = info['active_indices']
     elif model_type == 'gated_mlp':
         s = torch.sigmoid(model.gate.log_alpha)
         s_bar = s * (model.gate.zeta - model.gate.gamma) + model.gate.gamma
@@ -77,44 +89,21 @@ def extract_selected_features(model, model_type, n_features, threshold=0.1):
         selected = [i for i, g in enumerate(gates) if g > threshold]
     elif model_type == 'l1_sparse':
         w = model.fc1.weight.abs().sum(dim=0).cpu().numpy()
-        # Top-k or dynamic threshold based on mean weight
         w_norm = (w - w.min()) / (w.max() - w.min() + 1e-8)
         selected = [i for i, val in enumerate(w_norm) if val > threshold]
     else:
-        # Standard MLP does not screen features
         selected = list(range(n_features))
     return selected
 
 
-def main():
-    parser = argparse.ArgumentParser(description="DOENet High-Dimensional Benchmark Experiment")
-    parser.add_argument('--dim', type=int, default=500, help='Total number of input features (P)')
-    parser.add_argument('--samples', type=int, default=2500, help='Total sample size (N)')
-    parser.add_argument('--epochs', type=int, default=80, help='Training epochs per model')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
-    parser.add_argument('--lr', type=float, default=2e-3, help='Learning rate')
-    parser.add_argument('--lambda_sparse', type=float, default=2e-3, help='Sparsity regularization weight')
-    parser.add_argument('--lambda_ortho', type=float, default=1e-2, help='DOE Orthogonality regularization weight')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed')
-    args = parser.parse_args()
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("=" * 70)
-    print(f"🚀 DOENet Benchmark Experiment (P={args.dim}, N={args.samples}, Device={device})")
-    print("=" * 70)
-
-    # 1. Load High-Dimensional Benchmark Data
-    data = get_dataloaders(n_samples=args.samples, n_features=args.dim, batch_size=args.batch_size, seed=args.seed)
+def run_single_seed(seed, args, device):
+    data = get_dataloaders(n_samples=args.samples, n_features=args.dim,
+                           batch_size=args.batch_size, seed=seed)
     train_loader = data['train']
     val_loader = data['val']
     test_loader = data['test']
     true_indices = data['true_indices']
     X_test_t = data['X_test'].to(device)
-
-    print(f"Ground-truth active causal features: {true_indices} (10 of {args.dim})")
-    print(f"Features 10..49 are multicollinear confounding variables.")
-    print(f"Features 50..{args.dim-1} are pure noise variables.")
-    print("-" * 70)
 
     models = {
         'DOENet (Ours)': ('doenet', DOENet(in_features=args.dim, num_factors=24, hidden_dim=64, interaction_rank=16).to(device)),
@@ -123,73 +112,141 @@ def main():
         'Standard MLP (Vanilla)': ('standard_mlp', StandardMLP(in_features=args.dim, hidden_dim=64).to(device))
     }
 
-    benchmark_summary = {}
-
+    seed_results = {}
     for name, (m_type, model) in models.items():
-        print(f"\nTraining [{name}]...")
         optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
         
         start_t = time.time()
         for epoch in range(1, args.epochs + 1):
-            loss = train_epoch(model, train_loader, optimizer, m_type,
-                               lambda_sparse=args.lambda_sparse, lambda_ortho=args.lambda_ortho, device=device)
+            train_epoch(model, train_loader, optimizer, m_type, epoch, args.epochs,
+                        lambda_sparse=args.lambda_sparse, lambda_ortho=args.lambda_ortho, device=device)
             scheduler.step()
-            if epoch % 20 == 0 or epoch == args.epochs:
-                val_res = evaluate(model, val_loader, device=device)
-                print(f"  Epoch {epoch:02d}/{args.epochs:02d} | Train Loss: {loss:.4f} | Val RMSE: {val_res['rmse']:.4f} | Val R²: {val_res['r2']:.4f}")
-                
+            
         elapsed = time.time() - start_t
-        
-        # Test Evaluation
         test_metrics = evaluate(model, test_loader, device=device)
         selected_feats = extract_selected_features(model, m_type, args.dim)
         fs_metrics = compute_feature_selection_metrics(selected_feats, true_indices, args.dim)
         
-        # ANOVA Decomposition for DOENet
         anova_info = {}
         if m_type == 'doenet':
             anova_info = model.get_anova_variance_decomposition(X_test_t)
             
-        benchmark_summary[name] = {
-            'test_rmse': test_metrics['rmse'],
-            'test_r2': test_metrics['r2'],
+        seed_results[name] = {
+            'rmse': test_metrics['rmse'],
+            'r2': test_metrics['r2'],
+            'precision': fs_metrics['precision'],
+            'recall': fs_metrics['recall'],
+            'f1': fs_metrics['f1_score'],
+            'fdp': fs_metrics['fdp'],
             'num_selected': fs_metrics['num_selected'],
-            'fs_precision': fs_metrics['precision'],
-            'fs_recall': fs_metrics['recall'],
-            'fs_f1': fs_metrics['f1_score'],
-            'training_time_sec': elapsed,
-            'anova': anova_info
+            'anova': anova_info,
+            'time': elapsed
         }
+    return seed_results
+
+
+def main():
+    parser = argparse.ArgumentParser(description="DOENet Multi-Seed Rigorous Benchmark Protocol")
+    parser.add_argument('--dim', type=int, default=500, help='Input dimension P')
+    parser.add_argument('--samples', type=int, default=2500, help='Sample size N')
+    parser.add_argument('--epochs', type=int, default=80, help='Training epochs')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
+    parser.add_argument('--lr', type=float, default=2e-3, help='Learning rate')
+    parser.add_argument('--lambda_sparse', type=float, default=2e-3, help='Sparsity regularization')
+    parser.add_argument('--lambda_ortho', type=float, default=1e-2, help='Orthogonality regularization')
+    parser.add_argument('--num_seeds', type=int, default=5, help='Number of independent random seeds for CV')
+    args = parser.parse_args()
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print("=" * 85)
+    print(f"🚀 DOENet Multi-Seed Cross-Validation Benchmark (P={args.dim}, N={args.samples}, Seeds={args.num_seeds})")
+    print(f"   Device: {device}")
+    print("=" * 85)
+
+    base_seeds = [42 + i * 17 for i in range(args.num_seeds)]
+    model_names = [
+        'DOENet (Ours)',
+        'GatedMLP (w/o Ortho/ANOVA)',
+        'L1-Sparse MLP (LassoNet style)',
+        'Standard MLP (Vanilla)'
+    ]
+
+    all_seed_runs = {name: {'rmse': [], 'r2': [], 'precision': [], 'recall': [], 'f1': [], 'fdp': [], 'anova': []}
+                     for name in model_names}
+
+    for s_idx, seed in enumerate(base_seeds, 1):
+        print(f"\n[Run {s_idx}/{args.num_seeds}] Running benchmark with Random Seed {seed}...")
+        res = run_single_seed(seed, args, device)
+        for name in model_names:
+            for metric in ['rmse', 'r2', 'precision', 'recall', 'f1', 'fdp']:
+                all_seed_runs[name][metric].append(res[name][metric])
+            if res[name]['anova']:
+                all_seed_runs[name]['anova'].append(res[name]['anova'])
+
+    # Statistical Aggregation (Mean +/- Std)
+    summary = {}
+    for name in model_names:
+        summary[name] = {}
+        for metric in ['rmse', 'r2', 'precision', 'recall', 'f1', 'fdp']:
+            vals = np.array(all_seed_runs[name][metric])
+            summary[name][f"{metric}_mean"] = float(np.mean(vals))
+            summary[name][f"{metric}_std"] = float(np.std(vals))
+
+    # Paired Student's t-test vs DOENet
+    doenet_rmse = np.array(all_seed_runs['DOENet (Ours)']['rmse'])
+    doenet_f1 = np.array(all_seed_runs['DOENet (Ours)']['f1'])
+    t_test_results = {}
+
+    for name in model_names[1:]:
+        base_rmse = np.array(all_seed_runs[name]['rmse'])
+        base_f1 = np.array(all_seed_runs[name]['f1'])
+        _, p_rmse = stats.ttest_rel(doenet_rmse, base_rmse)
+        _, p_f1 = stats.ttest_rel(doenet_f1, base_f1)
+        t_test_results[name] = {'p_rmse': float(p_rmse), 'p_f1': float(p_f1)}
 
     # Print Final Academic Comparison Table
-    print("\n" + "=" * 95)
-    print("📊 BENCHMARK EXPERIMENT RESULTS (High-Dimensional Tabular P=500)")
-    print("=" * 95)
-    header = f"{'Model':<30} | {'Test RMSE':<9} | {'Test R²':<8} | {'Selected':<8} | {'Precision':<9} | {'Recall':<7} | {'F1-Score':<8}"
+    print("\n" + "=" * 105)
+    print(f"📊 MULTI-SEED BENCHMARK RESULTS (Mean +/- Std across {args.num_seeds} Seeds, P={args.dim})")
+    print("=" * 105)
+    header = f"{'Model':<30} | {'Test RMSE':<17} | {'Test R²':<16} | {'Precision':<16} | {'Recall':<15} | {'F1-Score':<16}"
     print(header)
-    print("-" * 95)
-    for name, res in benchmark_summary.items():
-        line = (f"{name:<30} | "
-                f"{res['test_rmse']:<9.4f} | "
-                f"{res['test_r2']:<8.4f} | "
-                f"{res['num_selected']:<8d} | "
-                f"{res['fs_precision']:<9.4f} | "
-                f"{res['fs_recall']:<7.4f} | "
-                f"{res['fs_f1']:<8.4f}")
-        print(line)
-    print("=" * 95)
+    print("-" * 105)
+    for name in model_names:
+        s = summary[name]
+        rmse_str = f"{s['rmse_mean']:.3f} +/- {s['rmse_std']:.3f}"
+        r2_str = f"{s['r2_mean']:.3f} +/- {s['r2_std']:.3f}"
+        prec_str = f"{s['precision_mean']:.3f} +/- {s['precision_std']:.3f}"
+        rec_str = f"{s['recall_mean']:.3f} +/- {s['recall_std']:.3f}"
+        f1_str = f"{s['f1_mean']:.3f} +/- {s['f1_std']:.3f}"
+        print(f"{name:<30} | {rmse_str:<17} | {r2_str:<16} | {prec_str:<16} | {rec_str:<15} | {f1_str:<16}")
+    print("=" * 105)
 
-    if 'DOENet (Ours)' in benchmark_summary and benchmark_summary['DOENet (Ours)']['anova']:
-        anova = benchmark_summary['DOENet (Ours)']['anova']
-        print(f"\n🔍 DOENet Functional ANOVA Decomposition on Test Set:")
-        print(f"  - Main Effects Variance:     {anova['main_effect_pct']:.2f}%")
-        print(f"  - Pairwise Interaction Var:  {anova['interaction_pct']:.2f}%")
-        print(f"  - Deep Non-linear Residual:  {anova['residual_pct']:.2f}%")
+    print("\n📌 Statistical Significance (Paired Student's t-test vs. DOENet):")
+    for name, p_vals in t_test_results.items():
+        sig_rmse = "**" if p_vals['p_rmse'] < 0.01 else ("*" if p_vals['p_rmse'] < 0.05 else "n.s.")
+        sig_f1 = "**" if p_vals['p_f1'] < 0.01 else ("*" if p_vals['p_f1'] < 0.05 else "n.s.")
+        print(f"  - DOENet vs. {name:<30} | RMSE p-val: {p_vals['p_rmse']:.4e} ({sig_rmse}) | F1 p-val: {p_vals['p_f1']:.4e} ({sig_f1})")
 
-    with open('benchmark_results.json', 'w') as f:
-        json.dump(benchmark_summary, f, indent=2)
-    print("\n✅ Results successfully saved to benchmark_results.json")
+    if all_seed_runs['DOENet (Ours)']['anova']:
+        anovas = all_seed_runs['DOENet (Ours)']['anova']
+        m_pct = np.mean([a['main_effect_pct'] for a in anovas])
+        i_pct = np.mean([a['interaction_pct'] for a in anovas])
+        r_pct = np.mean([a['residual_pct'] for a in anovas])
+        print(f"\n🔍 DOENet Mean ANOVA Variance Attribution (across {len(anovas)} runs):")
+        print(f"  - Main Effects Variance:     {m_pct:.2f}%")
+        print(f"  - Pairwise Interaction Var:  {i_pct:.2f}%")
+        print(f"  - Deep Non-linear Residual:  {r_pct:.2f}%")
+
+    out_payload = {
+        'config': vars(args),
+        'summary': summary,
+        'significance_tests': t_test_results,
+        'raw_runs': all_seed_runs
+    }
+    with open('benchmark_multiseed_results.json', 'w') as f:
+        json.dump(out_payload, f, indent=2)
+    print("\n✅ Multi-seed benchmark results saved to benchmark_multiseed_results.json")
 
 
 if __name__ == '__main__':
