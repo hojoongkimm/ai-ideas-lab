@@ -59,7 +59,7 @@ $$
 An exponential temperature annealing schedule $\tau_t = \max(\tau_{\min}, \tau_0 \cdot \exp(-\kappa t))$ guarantees continuous gradient propagation early in training and discrete factor pruning upon convergence.
 
 ### B. DOE Orthogonal Factor Regularization
-In traditional Design of Experiments (DOE), **Orthogonal Arrays ($L_N(s^k)$)** ensure that factor columns have zero covariance, enabling independent estimation of main effects without confounding. To instill this principle into deep networks:
+In traditional Design of Experiments (DOE), **Orthogonal Arrays** ($L_N(s^k)$) ensure that factor columns have zero covariance, enabling independent estimation of main effects without confounding. To instill this principle into deep networks:
 
 $$
 \mathcal{L}_{\text{ortho}}(W_{\text{proj}}) = \frac{1}{K} \| W_{\text{proj}} W_{\text{proj}}^\top - I_K \|_F^2
