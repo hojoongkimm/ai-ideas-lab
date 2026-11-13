@@ -31,6 +31,14 @@ ai-ideas-lab/
 
 ---
 
+## 🧪 Tracked Research Experiments
+
+| No. | 실험 프로젝트 | 핵심 아키텍처 및 연구 가설 | 진행 상태 | 실험 경로 |
+| :---: | :--- | :--- | :---: | :---: |
+| **01** | **DOENet** | 고차원 테이블/센서 데이터를 위한 미분 가능한 직교 요인 스크리닝(DOFS) 및 함수형 ANOVA 분해 신경망 | 🚀 파이프라인 구축 완료 (서버 실증 대기) | [`experiments/01_doe_net`](./experiments/01_doe_net) |
+
+---
+
 ## 🛠️ Environment & Prerequisites
 
 - **Python**: 3.10+
