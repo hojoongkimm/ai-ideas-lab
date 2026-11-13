@@ -31,7 +31,7 @@
 ```
 ai-ideas-lab/
 ├── experiments/          # 개별 연구 아이디어별 독립 실험 모듈
-├── docs/                 # 연구 노트, 수학적 유도, 아이디어 분석 보고서
+├── docs/                 # 연구 노트, 수학적 유도 및 기술 문서
 ├── .gitignore            # PyTorch / CUDA / Checkpoints / Data 표준 제외 규칙
 └── README.md
 ```
