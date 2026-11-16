@@ -129,3 +129,42 @@ pip install -r requirements.txt
 python train_benchmark.py --dim 500 --samples 2500 --epochs 80 --num_seeds 5
 ```
 
+
+---
+
+## 🔧 5. Implementation Notes (branch `hj-benchmark`)
+
+Fixes applied before the real-data benchmark (see commit history for diffs):
+
+| Component | Issue | Fix |
+| :--- | :--- | :--- |
+| `OrthogonalFactorProjection` | $W_{\text{proj}}$ was never used in `forward`, so $\mathcal{L}_{\text{ortho}}$ did not affect predictions | The $K$ orthogonal factors $W_{\text{proj}}\tilde{x}$ now feed the deep residual head (`use_ortho_proj=True`, default). `use_ortho_proj=False` keeps the original behaviour for ablation |
+| Main-effect centering | Batch-mean centering was also applied at inference, so predictions depended on test batch size/composition | Running mean $\hat{\mathbb{E}}[f_i(X_i)]$ is tracked during training and used at inference |
+| Multi-class tasks | Only regression / binary output | `out_features = C` with cross-entropy on logits |
+| Feature ranking | Clamped gates tie at 1.0, making top-$k$ order arbitrary | `get_feature_importance` ranks by $\log\alpha$ |
+| `GatedMLP_Ablation` | No temperature annealing (unlike DOENet), binary only | Same annealing schedule as DOENet, multi-class support |
+| `train_benchmark.py` | `.numpy()` on tensors requiring grad crashed the GatedMLP / L1 paths | Feature extraction runs under `torch.no_grad()` |
+
+---
+
+## 🧪 6. Real-Data Feature-Selection Benchmark
+
+Standard supervised feature-selection benchmark shared by CAE (ICML'19), LassoNet (JMLR'21) and Sequential Attention (ICLR'23): **Mice Protein, MNIST, Fashion-MNIST, ISOLET, COIL-20, Activity**, $k = 50$ selected features, seeds 1–5.
+
+- **Data & splits:** `bench/prepare_sa_data.py` re-implements the Sequential Attention data pipeline (same loaders, preprocessing, train/val/test splits per seed).
+- **Evaluation:** every method ranks all features; the top-50 are given to the *same* downstream classifier (input BN → 67 ReLU → softmax, SA batch sizes/epochs), trained from scratch; test accuracy is reported as mean ± SD over 5 seeds.
+- **Methods:** DOENet, DOENet without orthogonal projection, GatedMLP ablation, STG, LassoNet, TabNet, random-$k$, all features.
+- **Full protocol** (fixed before running, incl. deviations from the reference): [`bench/PROTOCOL.md`](./bench/PROTOCOL.md)
+
+```bash
+pip install -r requirements.txt -r requirements-benchmark.txt
+
+# 1) download + preprocess the 6 datasets (seeds 1-5)
+python bench/prepare_sa_data.py --out_dir DATA_DIR
+
+# 2) run the benchmark (resumable; one JSON line per dataset x method x seed)
+python run_fs_benchmark.py --data_dir DATA_DIR --out results.jsonl \
+    --datasets mice,coil20,isolet,activity,mnist,fashion --seeds 1 2 3 4 5
+```
+
+Status: full run in progress. Results will be added after independent verification.

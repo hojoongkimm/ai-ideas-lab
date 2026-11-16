@@ -1,0 +1,8 @@
+# Extra dependencies for bench/prepare_sa_data.py and run_fs_benchmark.py
+# (versions used for the reported runs)
+pandas>=2.0
+pillow>=10.0
+xlrd>=2.0.1
+lassonet==0.0.22
+stg==0.1.2           # needs a collections.abc shim on Python >= 3.10 (handled in run_fs_benchmark.py)
+pytorch-tabnet==4.1.0
