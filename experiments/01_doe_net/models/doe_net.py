@@ -96,70 +96,82 @@ class FunctionalANOVABlock(nn.Module):
             + sum_{i<j} f_{ij}(x_i, x_j) * (s_i * s_j) [Pairwise Interactions with Strong Heredity]
             + f_residual(x) [Deep Higher-Order Non-linear Residual]
     """
-    def __init__(self, in_features, hidden_dim=64, interaction_rank=16):
+    def __init__(self, in_features, hidden_dim=64, interaction_rank=16, out_dim=1,
+                 res_in_features=None, center_momentum=0.1):
         super().__init__()
         self.in_features = in_features
-        
+        self.out_dim = out_dim
+        self.center_momentum = center_momentum
+
         # 1. Main Effect sub-network (1D feature-wise nonlinear mappings)
         self.main_weight = nn.Parameter(torch.randn(in_features, hidden_dim) * 0.02)
         self.main_bias = nn.Parameter(torch.zeros(in_features, hidden_dim))
-        self.main_out = nn.Linear(hidden_dim, 1, bias=False)
-        
+        self.main_out = nn.Linear(hidden_dim, out_dim, bias=False)
+        # Running estimate of E[f_i(X_i)] used for centering at eval time, so that
+        # predictions do not depend on test batch composition / batch size.
+        self.register_buffer('main_running_mean', torch.zeros(in_features, out_dim))
+
         # 2. Pairwise Bilinear Interaction with Heredity Mask
         self.interaction_rank = interaction_rank
         self.inter_u = nn.Linear(in_features, interaction_rank, bias=False)
         self.inter_v = nn.Linear(in_features, interaction_rank, bias=False)
-        self.inter_head = nn.Linear(interaction_rank, 1, bias=False)
-        
+        self.inter_head = nn.Linear(interaction_rank, out_dim, bias=False)
+
         # 3. Deep Non-linear Residual Head for complex multi-way patterns
+        res_in = res_in_features if res_in_features is not None else in_features
         self.res_mlp = nn.Sequential(
-            nn.Linear(in_features, hidden_dim),
+            nn.Linear(res_in, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, 1)
+            nn.Linear(hidden_dim, out_dim)
         )
-        
-        # Global bias (Grand Mean f_0)
-        self.grand_mean = nn.Parameter(torch.zeros(1))
 
-    def forward(self, gated_x, gate_values):
+        # Global bias (Grand Mean f_0)
+        self.grand_mean = nn.Parameter(torch.zeros(out_dim))
+
+    def forward(self, gated_x, gate_values, res_input=None):
         batch_size = gated_x.size(0)
-        
+
         # --- 1. Main Effect Computation with ANOVA Zero-Mean Centering ---
         main_hidden = torch.relu(gated_x.unsqueeze(-1) * self.main_weight.unsqueeze(0) + self.main_bias.unsqueeze(0))
-        main_per_feat = self.main_out(main_hidden).squeeze(-1)  # (B, P)
-        
-        # Strict zero-mean centering per batch to satisfy ANOVA condition: E[f_i(X_i)] = 0
-        if batch_size > 1:
-            main_centered = main_per_feat - main_per_feat.mean(dim=0, keepdim=True)
+        main_per_feat = self.main_out(main_hidden)  # (B, P, C)
+
+        # Zero-mean centering to satisfy ANOVA condition E[f_i(X_i)] = 0:
+        # batch mean while training (and update running mean), running mean at eval.
+        if self.training and batch_size > 1:
+            batch_mean = main_per_feat.mean(dim=0)
+            with torch.no_grad():
+                self.main_running_mean.mul_(1.0 - self.center_momentum).add_(
+                    self.center_momentum * batch_mean.detach())
+            main_centered = main_per_feat - batch_mean.unsqueeze(0)
         else:
-            main_centered = main_per_feat
-            
+            main_centered = main_per_feat - self.main_running_mean.unsqueeze(0)
+
         # Gating: Zero out inactive features
-        main_centered = main_centered * gate_values.unsqueeze(0)
-        main_effect = main_centered.sum(dim=-1, keepdim=True)  # (B, 1)
-        
+        main_centered = main_centered * gate_values.view(1, -1, 1)
+        main_effect = main_centered.sum(dim=1)  # (B, C)
+
         # --- 2. Heredity-Gated Pairwise Bilinear Interaction ---
         # Strong Heredity: Interaction x_i * x_j is bounded by gate_i * gate_j
         u = self.inter_u(gated_x)  # (B, rank)
         v = self.inter_v(gated_x)  # (B, rank)
         inter_latent = u * v       # (B, rank)
-        inter_effect = self.inter_head(inter_latent)  # (B, 1)
-        
-        # --- 3. Deep Residual Head ---
-        res_effect = self.res_mlp(gated_x)  # (B, 1)
-        
+        inter_effect = self.inter_head(inter_latent)  # (B, C)
+
+        # --- 3. Deep Residual Head (on orthogonal factors if provided) ---
+        res_effect = self.res_mlp(gated_x if res_input is None else res_input)  # (B, C)
+
         # Total Model Output
         y_pred = self.grand_mean + main_effect + inter_effect + res_effect
-        
+
         components = {
             'grand_mean': self.grand_mean,
             'main_effect': main_effect,
             'inter_effect': inter_effect,
             'res_effect': res_effect,
-            'main_per_feature': main_centered,
+            'main_per_feature': main_centered.squeeze(-1) if self.out_dim == 1 else main_centered,
             'gate_values': gate_values
         }
         return y_pred, components
@@ -168,32 +180,43 @@ class FunctionalANOVABlock(nn.Module):
 class DOENet(nn.Module):
     """DOENet Unified Architecture."""
     def __init__(self, in_features, out_features=1, num_factors=32, hidden_dim=64,
-                 interaction_rank=16, task='regression'):
+                 interaction_rank=16, task='regression', use_ortho_proj=True):
+        """task: 'regression' | 'classification' (binary if out_features == 1,
+        multi-class softmax/cross-entropy if out_features > 1).
+        use_ortho_proj: feed the K orthogonal factors W_proj x~ to the residual head.
+        If False (original behaviour), W_proj is not used in the forward pass and
+        the orthogonality penalty has no effect on predictions."""
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.task = task
-        
+        self.use_ortho_proj = use_ortho_proj
+
         self.screening_gate = HardConcreteGate(in_features)
         self.orthogonal_proj = OrthogonalFactorProjection(in_features, num_factors)
-        self.anova_block = FunctionalANOVABlock(in_features, hidden_dim, interaction_rank)
+        self.anova_block = FunctionalANOVABlock(
+            in_features, hidden_dim, interaction_rank, out_dim=out_features,
+            res_in_features=num_factors if use_ortho_proj else None)
 
     def forward(self, x, current_temperature=None):
         gated_x, gate_values = self.screening_gate(x, current_temperature=current_temperature)
-        y_pred, components = self.anova_block(gated_x, gate_values)
-        
+        res_input = self.orthogonal_proj(gated_x) if self.use_ortho_proj else None
+        y_pred, components = self.anova_block(gated_x, gate_values, res_input=res_input)
+
         if self.task == 'classification' and self.out_features == 1:
             y_out = torch.sigmoid(y_pred)
         else:
-            y_out = y_pred
-            
+            y_out = y_pred  # regression output or multi-class logits
+
         return y_out, components
 
     def compute_loss(self, y_pred, y_true, lambda_sparse=1e-3, lambda_ortho=1e-2):
         if self.task == 'regression':
             task_loss = F.mse_loss(y_pred.view(-1), y_true.view(-1))
-        else:
+        elif self.out_features == 1:
             task_loss = F.binary_cross_entropy(y_pred.view(-1), y_true.view(-1).float())
+        else:
+            task_loss = F.cross_entropy(y_pred, y_true.view(-1).long())
             
         sparse_loss = self.screening_gate.get_l0_loss()
         ortho_loss = self.orthogonal_proj.get_orthogonality_loss()
@@ -215,9 +238,13 @@ class DOENet(nn.Module):
         gates = torch.clamp(s_bar, 0.0, 1.0).cpu().numpy()
         
         active_indices = [i for i, g in enumerate(gates) if g > threshold]
-        sorted_indices = sorted(range(len(gates)), key=lambda k: gates[k], reverse=True)
+        # Rank by log_alpha: the clamped gate saturates at 1.0 for many features,
+        # which would make the top-k order arbitrary among ties.
+        log_alpha = self.screening_gate.log_alpha.detach().cpu().numpy()
+        sorted_indices = sorted(range(len(gates)), key=lambda k: log_alpha[k], reverse=True)
         return {
             'gates': gates,
+            'log_alpha': log_alpha,
             'active_indices': active_indices,
             'sorted_indices': sorted_indices,
             'num_active': len(active_indices)

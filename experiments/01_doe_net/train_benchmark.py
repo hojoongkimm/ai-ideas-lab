@@ -77,6 +77,7 @@ def evaluate(model, loader, device='cpu'):
     return compute_regression_metrics(y_trues, y_preds)
 
 
+@torch.no_grad()
 def extract_selected_features(model, model_type, n_features, threshold=0.1):
     model.eval()
     if model_type == 'doenet':
