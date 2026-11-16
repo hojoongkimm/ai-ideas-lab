@@ -79,18 +79,21 @@ class GatedMLP_Ablation(nn.Module):
             nn.Linear(hidden_dim, out_features)
         )
 
-    def forward(self, x):
-        gated_x, gate_val = self.gate(x)
+    def forward(self, x, current_temperature=None):
+        # Same temperature annealing as DOENet so the ablation differs only in architecture.
+        gated_x, gate_val = self.gate(x, current_temperature=current_temperature)
         out = self.mlp(gated_x)
-        if self.task == 'classification':
+        if self.task == 'classification' and out.size(-1) == 1:
             out = torch.sigmoid(out)
         return out, {'gate_values': gate_val}
 
     def compute_loss(self, y_pred, y_true, lambda_sparse=1e-3):
         if self.task == 'regression':
             task_loss = F.mse_loss(y_pred.view(-1), y_true.view(-1))
-        else:
+        elif y_pred.size(-1) == 1:
             task_loss = F.binary_cross_entropy(y_pred.view(-1), y_true.view(-1).float())
+        else:
+            task_loss = F.cross_entropy(y_pred, y_true.view(-1).long())
         sparse_loss = self.gate.get_l0_loss()
         total_loss = task_loss + lambda_sparse * sparse_loss
         return {'total_loss': total_loss, 'task_loss': task_loss, 'sparse_loss': sparse_loss}

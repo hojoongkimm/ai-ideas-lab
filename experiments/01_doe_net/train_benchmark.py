@@ -44,7 +44,7 @@ def train_epoch(model, loader, optimizer, model_type, epoch, max_epochs,
             y_pred, _ = model(X_b, current_temperature=temp)
             loss_dict = model.compute_loss(y_pred, y_b, lambda_sparse=lambda_sparse, lambda_ortho=lambda_ortho)
         elif model_type == 'gated_mlp':
-            y_pred, _ = model(X_b)
+            y_pred, _ = model(X_b, current_temperature=temp)
             loss_dict = model.compute_loss(y_pred, y_b, lambda_sparse=lambda_sparse)
         elif model_type == 'l1_sparse':
             y_pred, _ = model(X_b)
