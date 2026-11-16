@@ -106,3 +106,24 @@ data) and add interpretability / contribution analyses.
 - **Additional pre-specified analyses**: selection stability across the 5 seeds (mean pairwise
   Jaccard index of top-50 sets) and selected-pixel maps for MNIST / Fashion-MNIST.
 - Primary metric, downstream protocol, splits, seeds and statistical tests (§2, §4, §5) are unchanged.
+
+### v3 — 2026-11-16, before any SA-family, tuned or final result was produced
+- **Parallel execution.** Tuning grid points, tuning-independent baselines (LassoNet, TabNet,
+  random, all features) and the final runs are executed as separate processes writing separate
+  JSONL files, merged by (dataset, method, seed) at analysis time. No setting changes.
+- **Official SA code — deviations required to run it** (`bench/sa_official_select.py`):
+  1. `decay_steps = 0` (mice, fashion in `hyperparams_sa.py`) makes TF `ExponentialDecay`
+     return nan at step 0 and 0 afterwards (verified), i.e. no training; interpreted as
+     "no decay" (constant learning rate).
+  2. Sequential LASSO / Group LASSO: `SequentialLASSOModel` does not pass `layer_sequence` to
+     `MLPModel` (TypeError in the official code); fixed by a runtime patch, files unmodified.
+  3. Integer learning rate of mice cast to float (run.py does this through absl flags).
+  4. Selection uses the authors' per-dataset selection epochs/batch/lr for all three algorithms
+     (as `experiments.py`, which only switches `algo`), batch norm on, deep_layers 67.
+  TensorFlow 2.21 (CPU), tf-keras 2.21 with `TF_USE_LEGACY_KERAS=1`.
+- **Exploratory variant `doenet_budget`** (target-k constrained gates, λ updated by dual ascent):
+  a first implementation (constraint on the expected L0 at the fixed temperature 0.66) met the
+  budget in expectation but left ≤ 5 deterministic gates open on COIL-20 validation (seed 1).
+  It is developed further on validation data only; it enters the final table only if, on
+  seed-1 validation, it keeps 0.8k–1.2k deterministic gates open on every dataset. Otherwise it
+  is reported as a negative exploratory result.

@@ -31,13 +31,21 @@ def main():
     ap.add_argument("--families", default="doenet,stg")
     ap.add_argument("--datasets", default="mice,coil20,isolet,activity,mnist,fashion")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--grid_ids", default=None, help="subset to run, e.g. 'doenet:0,1;stg:2' (parallel workers)")
+    ap.add_argument("--pick_only", action="store_true", help="only aggregate existing grid outputs")
     args, passthrough = ap.parse_known_args()
     os.makedirs(args.work_dir, exist_ok=True)
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     datasets = args.datasets.split(",")
 
-    for fam in args.families.split(","):
+    subset = None
+    if args.grid_ids:
+        subset = {f: [int(i) for i in ids.split(",")] for f, ids in
+                  (part.split(":") for part in args.grid_ids.split(";"))}
+    for fam in ([] if args.pick_only else args.families.split(",")):
         for i, cfg in enumerate(GRID[fam]):
+            if subset is not None and i not in subset.get(fam, []):
+                continue
             cfg_path = os.path.join(args.work_dir, f"{fam}_{i}.config.json")
             json.dump({fam: {ds: cfg for ds in datasets}}, open(cfg_path, "w"))
             cmd = [sys.executable, os.path.join(here, "run_fs_benchmark.py"),
@@ -47,6 +55,8 @@ def main():
             print(f"[tune] {fam} grid {i}: {cfg}", flush=True)
             subprocess.run(cmd, cwd=here, check=False)
 
+    if subset is not None and not args.pick_only:
+        return
     tuned, summary = {}, {}
     for fam in args.families.split(","):
         tuned[fam], summary[fam] = {}, {}

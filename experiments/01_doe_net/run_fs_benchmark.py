@@ -172,9 +172,18 @@ def _finite_list(a, nd=5):
     return [round(float(v), nd) if np.isfinite(v) else None for v in np.asarray(a, dtype=float)]
 
 
-def train_gate_model(model, kind, Xtr, ytr, Xva, yva, hp, epochs, lambda_ortho, device, seed):
-    """Train DOENet / GatedMLP with the repo's objective; keep best-val checkpoint."""
+def train_gate_model(model, kind, Xtr, ytr, Xva, yva, hp, epochs, lambda_ortho, device, seed,
+                     budget_k=None, trace=None):
+    """Train DOENet / GatedMLP with the repo's objective; keep best-val checkpoint.
+
+    budget_k: if given, lambda_sparse is not fixed but a Lagrange multiplier for the
+    constraint E[||z||_0] <= budget_k, updated by projected dual ascent after every step:
+        lambda <- max(0, lambda + dual_lr * (E[||z||_0] - budget_k) / P).
+    Checkpoint = best validation accuracy among epochs whose expected L0 is within
+    budget_slack * budget_k (fallback: last epoch)."""
     set_seed(seed)
+    lam = 0.0 if budget_k else hp.lambda_sparse
+    P = Xtr.shape[1]
     opt = torch.optim.AdamW(model.parameters(), lr=hp.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=1e-5)
     rng = np.random.RandomState(seed)
@@ -188,19 +197,28 @@ def train_gate_model(model, kind, Xtr, ytr, Xva, yva, hp, epochs, lambda_ortho, 
                 continue
             y_pred, _ = model(Xt[b], current_temperature=temp)
             if kind == "doenet":
-                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=hp.lambda_sparse,
+                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=lam,
                                         lambda_ortho=lambda_ortho)
             else:
-                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=hp.lambda_sparse)
+                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=lam)
             opt.zero_grad()
             ld["total_loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
+            if budget_k:
+                lam = max(0.0, lam + hp.dual_lr * (float(ld["sparse_loss"]) - budget_k) / P)
         sched.step()
         va = accuracy(predict_logits(model, Xva, device), yva)
-        if va > best:
+        l0 = float(model.screening_gate.get_l0_loss()) if kind == "doenet" else float(model.gate.get_l0_loss())
+        if trace is not None:
+            trace.append([ep, round(lam, 6), round(l0, 2), round(va, 4)])
+        feasible = (not budget_k) or l0 <= hp.budget_slack * budget_k
+        if feasible and va > best:
             best, best_state = va, {k: v.detach().clone() for k, v in model.state_dict().items()}
-    model.load_state_dict(best_state)
+    if best_state is None:  # constraint never met: use the last epoch
+        best = va
+    else:
+        model.load_state_dict(best_state)
     return best
 
 
@@ -239,21 +257,28 @@ def select_doenet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds, v
     hp = resolve_hp(args, "doenet", ds)
     epochs = epochs_for(len(ytr), hp.batch_size, hp.epochs, hp.min_steps)
     lam_o = 0.0 if variant == "noorthoreg" else hp.lambda_ortho
+    budget = None
+    if variant == "budget":  # tuning-free: target k, repo default lambda_ortho
+        budget, lam_o = args.k, args.lambda_ortho
     set_seed(seed)
     m = DOENet(Xtr.shape[1], out_features=n_cls, num_factors=hp.num_factors,
                hidden_dim=hp.hidden_dim, interaction_rank=hp.interaction_rank,
                task="classification", use_ortho_proj=(variant != "noortho")).to(device)
-    val = train_gate_model(m, "doenet", Xtr, ytr, Xva, yva, hp, epochs, lam_o, device, seed)
+    trace = []
+    val = train_gate_model(m, "doenet", Xtr, ytr, Xva, yva, hp, epochs, lam_o, device, seed,
+                           budget_k=budget, trace=trace)
     info = m.get_feature_importance(threshold=0.1)
     ranking = np.asarray(info["sorted_indices"])
     own = float("nan") if args.val_only else accuracy(predict_logits(m, Xte, device), yte)
     extra = {"num_active_gates": int(info["num_active"]), "epochs": epochs,
-             "hp": {"lambda_sparse": hp.lambda_sparse, "lambda_ortho": lam_o, "lr": hp.lr,
-                    "batch_size": hp.batch_size},
+             "hp": {"lambda_sparse": "dual" if budget else hp.lambda_sparse, "lambda_ortho": lam_o,
+                    "lr": hp.lr, "batch_size": hp.batch_size,
+                    **({"budget_k": budget, "dual_lr": hp.dual_lr, "budget_slack": hp.budget_slack} if budget else {})},
+             "trace": trace,
              "scores": _finite_list(info["log_alpha"])}
     X_anova = Xva if args.val_only else Xte
     extra["anova"] = m.get_anova_variance_decomposition(torch.from_numpy(X_anova[:2048]).to(device))
-    if args.interpret and variant == "full":
+    if args.interpret and variant in ("full", "budget"):
         extra["interpretation"] = doenet_interpretation(m, ranking, device, k=args.k)
     return ranking, own, val, extra
 
@@ -354,6 +379,8 @@ def main():
     ap.add_argument("--num_factors", type=int, default=24)
     ap.add_argument("--hidden_dim", type=int, default=64)
     ap.add_argument("--interaction_rank", type=int, default=16)
+    ap.add_argument("--dual_lr", type=float, default=1e-2)      # doenet_budget: dual ascent step on lambda
+    ap.add_argument("--budget_slack", type=float, default=1.2)  # doenet_budget: feasible if E[L0] <= slack * k
     ap.add_argument("--min_steps", type=int, default=10000)  # epochs = max(epochs, ceil(min_steps/steps_per_epoch)); DOENet family + STG
     # protocol v2
     ap.add_argument("--config_json", default=None, help='per-dataset overrides {"doenet": {ds: {...}}, "stg": {ds: {...}}}')
@@ -403,6 +430,7 @@ def main():
         "doenet": lambda *a, **k: select_doenet(*a, **k, variant="full"),
         "doenet_noortho": lambda *a, **k: select_doenet(*a, **k, variant="noortho"),
         "doenet_noorthoreg": lambda *a, **k: select_doenet(*a, **k, variant="noorthoreg"),
+        "doenet_budget": lambda *a, **k: select_doenet(*a, **k, variant="budget"),
         "gated_mlp": select_gated_mlp,
         "stg": select_stg,
         "lassonet": select_lassonet,
