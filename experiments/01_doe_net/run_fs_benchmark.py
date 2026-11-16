@@ -283,6 +283,94 @@ def select_doenet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds, v
     return ranking, own, val, extra
 
 
+def train_pruned(model, kind, Xtr, ytr, Xva, yva, args, device, seed, lambda_sparse, lambda_ortho):
+    """DOENet-k training (protocol v4): fixed input mask, cubic schedule of active features
+    n_t = k + (P - k)(1 - t/T_p)^3 for t < T_p (T_p = prune_frac * epochs), afterwards n_t = k;
+    at the end of every epoch the active features with the lowest gate log_alpha are masked.
+    Checkpoint = best validation accuracy after T_p (exactly k active features).
+    Ranking = kept features (by final log_alpha) followed by the reverse removal order."""
+    set_seed(seed)
+    P, k = Xtr.shape[1], args.k
+    epochs = epochs_for(len(ytr), args.batch_size, args.epochs, args.k_min_steps)
+    Tp = max(1, int(round(args.prune_frac * epochs)))
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=1e-5)
+    rng = np.random.RandomState(seed)
+    Xt, yt = torch.from_numpy(Xtr).to(device), torch.from_numpy(ytr).to(device)
+    gate = model.screening_gate if kind == "doenet" else model.gate
+    mask = torch.ones(P, device=device)
+    removed, best, best_state, best_mask = [], -1.0, None, None
+    for ep in range(1, epochs + 1):
+        model.train()
+        temp = temperature(ep, epochs)
+        for b in batches(len(Xtr), args.batch_size, True, rng):
+            if len(b) < 2:
+                continue
+            y_pred, _ = model(Xt[b] * mask, current_temperature=temp)
+            if kind == "doenet":
+                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=lambda_sparse, lambda_ortho=lambda_ortho)
+            else:
+                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=lambda_sparse)
+            opt.zero_grad()
+            ld["total_loss"].backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            opt.step()
+        sched.step()
+        score = gate.log_alpha.detach()
+        n_t = k if ep >= Tp else int(round(k + (P - k) * (1 - ep / Tp) ** 3))
+        act = torch.nonzero(mask > 0).flatten()
+        if len(act) > n_t:
+            order = act[torch.argsort(score[act])]
+            drop = order[: len(act) - n_t]
+            removed.append(drop.cpu().numpy()[::-1].copy())
+            mask[drop] = 0
+        va = accuracy(predict_logits(model, Xva * mask.cpu().numpy(), device), yva)
+        if ep >= Tp and va > best:
+            best = va
+            best_state = {kk: v.detach().clone() for kk, v in model.state_dict().items()}
+            best_mask = mask.clone()
+    model.load_state_dict(best_state)
+    mask = best_mask
+    act = np.nonzero(mask.cpu().numpy() > 0)[0]
+    score = gate.log_alpha.detach().cpu().numpy()
+    ranking = list(act[np.argsort(-score[act], kind="stable")])
+    for d in reversed(removed):
+        ranking += [int(i) for i in d if i not in set(ranking)]
+    return np.asarray(ranking), best, mask.cpu().numpy(), epochs, Tp
+
+
+def select_doenet_k(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds, variant="full"):
+    """DOENet-k: tuning-free, exactly k features (protocol v4). Variants as select_doenet."""
+    lam_o = 0.0 if variant == "noorthoreg" else args.lambda_ortho
+    set_seed(seed)
+    m = DOENet(Xtr.shape[1], out_features=n_cls, num_factors=args.num_factors,
+               hidden_dim=args.hidden_dim, interaction_rank=args.interaction_rank,
+               task="classification", use_ortho_proj=(variant != "noortho")).to(device)
+    ranking, val, mask, epochs, Tp = train_pruned(m, "doenet", Xtr, ytr, Xva, yva, args, device, seed,
+                                                  lambda_sparse=args.k_lambda_sparse, lambda_ortho=lam_o)
+    Xe = (Xva if args.val_only else Xte) * mask
+    own = float("nan") if args.val_only else accuracy(predict_logits(m, Xe, device), yte)
+    extra = {"epochs": epochs, "prune_end_epoch": Tp, "n_active": int(mask.sum()),
+             "hp": {"lambda_sparse": args.k_lambda_sparse, "lambda_ortho": lam_o, "prune_frac": args.prune_frac,
+                    "min_steps": args.k_min_steps},
+             "scores": _finite_list(m.screening_gate.log_alpha.detach().cpu().numpy()),
+             "anova": m.get_anova_variance_decomposition(torch.from_numpy(Xe[:2048]).to(device))}
+    if args.interpret and variant == "full":
+        extra["interpretation"] = doenet_interpretation(m, ranking, device, k=args.k)
+    return ranking, own, val, extra
+
+
+def select_gated_mlp_k(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds):
+    set_seed(seed)
+    m = GatedMLP_Ablation(Xtr.shape[1], hidden_dim=args.hidden_dim, out_features=n_cls,
+                          task="classification").to(device)
+    ranking, val, mask, epochs, Tp = train_pruned(m, "gated_mlp", Xtr, ytr, Xva, yva, args, device, seed,
+                                                  lambda_sparse=args.k_lambda_sparse, lambda_ortho=0.0)
+    own = float("nan") if args.val_only else accuracy(predict_logits(m, Xte * mask, device), yte)
+    return ranking, own, val, {"epochs": epochs, "n_active": int(mask.sum()),
+                               "scores": _finite_list(m.gate.log_alpha.detach().cpu().numpy())}
+
+
 def select_gated_mlp(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds):
     hp = resolve_hp(args, "doenet", ds)   # ablation: same sparsity / budget as DOENet
     epochs = epochs_for(len(ytr), hp.batch_size, hp.epochs, hp.min_steps)
@@ -381,6 +469,9 @@ def main():
     ap.add_argument("--interaction_rank", type=int, default=16)
     ap.add_argument("--dual_lr", type=float, default=1e-2)      # doenet_budget: dual ascent step on lambda
     ap.add_argument("--budget_slack", type=float, default=1.2)  # doenet_budget: feasible if E[L0] <= slack * k
+    ap.add_argument("--prune_frac", type=float, default=0.6)      # DOENet-k: pruning ends at 60% of training
+    ap.add_argument("--k_lambda_sparse", type=float, default=2e-3)  # DOENet-k: repo-default L0 weight kept (D2)
+    ap.add_argument("--k_min_steps", type=int, default=5000)       # DOENet-k: as validated in development
     ap.add_argument("--min_steps", type=int, default=10000)  # epochs = max(epochs, ceil(min_steps/steps_per_epoch)); DOENet family + STG
     # protocol v2
     ap.add_argument("--config_json", default=None, help='per-dataset overrides {"doenet": {ds: {...}}, "stg": {ds: {...}}}')
@@ -431,6 +522,10 @@ def main():
         "doenet_noortho": lambda *a, **k: select_doenet(*a, **k, variant="noortho"),
         "doenet_noorthoreg": lambda *a, **k: select_doenet(*a, **k, variant="noorthoreg"),
         "doenet_budget": lambda *a, **k: select_doenet(*a, **k, variant="budget"),
+        "doenet_k": lambda *a, **k: select_doenet_k(*a, **k, variant="full"),
+        "doenet_k_noortho": lambda *a, **k: select_doenet_k(*a, **k, variant="noortho"),
+        "doenet_k_noorthoreg": lambda *a, **k: select_doenet_k(*a, **k, variant="noorthoreg"),
+        "gated_mlp_k": select_gated_mlp_k,
         "gated_mlp": select_gated_mlp,
         "stg": select_stg,
         "lassonet": select_lassonet,

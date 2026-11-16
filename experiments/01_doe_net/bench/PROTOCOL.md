@@ -127,3 +127,26 @@ data) and add interpretability / contribution analyses.
   It is developed further on validation data only; it enters the final table only if, on
   seed-1 validation, it keeps 0.8k–1.2k deterministic gates open on every dataset. Otherwise it
   is reported as a negative exploratory result.
+
+### v4 — 2026-11-16, before any DOENet-k test result was produced
+- **DOENet-k development (seed-1 validation only, `dev/doenet_k/`).** Four families were tried,
+  with the criterion "open deterministic gates ∈ [40, 60] on all six datasets and top-50
+  downstream val ≥ best fixed-λ DOENet val − 0.005":
+  A) λ control (dual ascent with dual restart; expected-L0 at annealed / fixed T = 2/3;
+     deterministic-mass constraint), B) gate polarization (β·Σg(1−g), Zhuang et al. 2020,
+     sigmoid-slope annealing), C) scale-symmetry blocking (LassoNet-style ‖W_j‖∞ ≤ M·g_j,
+     per-feature norm projection), D) gradual pruning (cubic schedule, Zhu & Gupta 2017).
+  A–C failed the count criterion on COIL-20 / ISOLET (all gates collapse to 0, or all stay
+  diffusely open ≈ 0.12); these are reported as negative results.
+- **Adopted: `doenet_k` = D2** (gradual pruning with a fixed input mask, score = gate log α,
+  repo-default λ_sparse = 2e-3 kept, pruning ends at 60 % of training, `k_min_steps` = 5000 as
+  developed). It uses exactly k features by construction. Its seed-1 validation accuracy was
+  ≥ reference − 0.005 on 5/6 datasets; on Mice it was 0.991 vs 1.000 (one of 108 validation
+  samples). The accuracy part of the criterion is therefore not strictly met; D2 is adopted
+  because the count requirement is met by construction and the shortfall is below the
+  validation granularity. This deviation is disclosed here and in the report; it will be
+  judged on the 5-seed test results like every other method.
+- **Ablations under DOENet-k** (same pruning): `doenet_k_noortho`, `doenet_k_noorthoreg`,
+  `gated_mlp_k`. The tuned fixed-λ DOENet (v2) remains in the table as a reference.
+- Observed on seed-1 validation before adoption (integration check): `gated_mlp_k` 0.936 vs
+  `doenet_k` 0.918 on ISOLET. Recorded so that the ablation result is not read post hoc.
