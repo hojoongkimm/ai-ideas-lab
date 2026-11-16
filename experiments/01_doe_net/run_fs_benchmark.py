@@ -40,7 +40,8 @@ def set_seed(seed):
 
 
 def load_dataset(data_dir, name, seed, val_frac):
-    d = np.load(os.path.join(data_dir, f"{name}.npz"))
+    per_seed = os.path.join(data_dir, f"{name}_seed{seed}.npz")  # bench/prepare_sa_data.py
+    d = np.load(per_seed if os.path.exists(per_seed) else os.path.join(data_dir, f"{name}.npz"))
     Xtr, ytr, Xte, yte = d["X_train"], d["y_train"], d["X_test"], d["y_test"]
     if "X_val" in d:
         Xva, yva = d["X_val"], d["y_val"]
@@ -84,40 +85,62 @@ def accuracy(logits, y):
 
 # ----------------------------------------------------------------------------- downstream
 class OneHiddenMLP(nn.Module):
-    def __init__(self, d_in, d_hidden, n_cls):
+    """Downstream model of Sequential Attention (SparseModel): input BatchNorm ->
+    Dense(67, ReLU) -> Dense(C, softmax). Applied to the k selected columns only
+    (equivalent to the reference's BN-then-mask, since BN is per feature)."""
+    def __init__(self, d_in, d_hidden, n_cls, input_bn=True):
         super().__init__()
+        self.bn = nn.BatchNorm1d(d_in) if input_bn else nn.Identity()
         self.net = nn.Sequential(nn.Linear(d_in, d_hidden), nn.ReLU(), nn.Linear(d_hidden, n_cls))
 
     def forward(self, x):
-        return self.net(x)
+        return self.net(self.bn(x))
 
 
-def downstream_accuracy(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
-    """Same classifier for every method; best-val-accuracy checkpoint."""
+# Sequential Attention experiments.py / hyperparams_sa.py (batch size, re-fit epochs)
+SA_BATCH = {"mice": 16, "mnist": 349, "fashion": 391, "isolet": 23, "coil20": 451, "activity": 183}
+SA_EPOCHS_FIT = {"mice": 250, "mnist": 50, "fashion": 54, "isolet": 80, "coil20": 166, "activity": 134}
+
+
+def _fit_mlp(Xt, yt, d_in, n_cls, lr, epochs, bs, args, device, seed):
     set_seed(seed)
+    m = OneHiddenMLP(d_in, args.ds_hidden, n_cls).to(device)
+    opt = torch.optim.Adam(m.parameters(), lr=lr)
+    rng = np.random.RandomState(seed)
+    n = len(yt)
+    for ep in range(epochs):
+        m.train()
+        perm = rng.permutation(n)
+        for i in range(0, n - bs + 1, bs):  # drop_remainder=True as in the reference
+            b = perm[i:i + bs]
+            loss = F.cross_entropy(m(Xt[b]), yt[b])
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+    return m
+
+
+def downstream_accuracy(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds_name=None):
+    """Identical downstream protocol for every method. Learning rate picked from
+    args.ds_lrs by validation accuracy of the final-epoch model; test accuracy of that
+    final-epoch model is reported (no test-time checkpoint selection)."""
     if args.downstream == "mlp":
-        m = OneHiddenMLP(Xtr.shape[1], args.ds_hidden, n_cls).to(device)
-        opt = torch.optim.Adam(m.parameters(), lr=args.ds_lr)
-        rng = np.random.RandomState(seed)
+        bs = SA_BATCH.get(ds_name, args.ds_batch)
+        epochs = SA_EPOCHS_FIT.get(ds_name, args.ds_epochs)
+        bs = min(bs, len(ytr))
         Xt, yt = torch.from_numpy(Xtr).to(device), torch.from_numpy(ytr).to(device)
-        best, best_state = -1.0, None
-        for ep in range(args.ds_epochs):
-            m.train()
-            for b in batches(len(Xtr), args.ds_batch, True, rng):
-                loss = F.cross_entropy(m(Xt[b]), yt[b])
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
+        best = (-1.0, None, None)
+        for lr in args.ds_lrs:
+            m = _fit_mlp(Xt, yt, Xtr.shape[1], n_cls, lr, epochs, bs, args, device, seed)
             va = accuracy(predict_logits(m, Xva, device), yva)
-            if va > best:
-                best, best_state = va, {k: v.detach().clone() for k, v in m.state_dict().items()}
-        m.load_state_dict(best_state)
-        return accuracy(predict_logits(m, Xte, device), yte), best
+            if va > best[0]:
+                best = (va, lr, accuracy(predict_logits(m, Xte, device), yte))
+        return best[2], best[0], best[1]
     if args.downstream == "extratrees":
         from sklearn.ensemble import ExtraTreesClassifier
         clf = ExtraTreesClassifier(n_estimators=args.et_trees, random_state=seed, n_jobs=8)
         clf.fit(np.concatenate([Xtr, Xva]), np.concatenate([ytr, yva]))
-        return float(clf.score(Xte, yte)), float("nan")
+        return float(clf.score(Xte, yte)), float("nan"), None
     raise ValueError(args.downstream)
 
 
@@ -186,15 +209,24 @@ def select_gated_mlp(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
 
 
 def select_stg(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
+    import collections
+    import collections.abc
+    for _n in ["Sequence", "Mapping", "Iterable", "Callable", "MutableMapping", "Set", "Hashable"]:
+        setattr(collections, _n, getattr(collections.abc, _n))  # stg 0.1.2 on Python >= 3.10
     from stg import STG
     set_seed(seed)
+    # stg 0.1.2 defaults (hidden [400,200], relu, sigma 0.5, lam 0.1, batch 100, wd 1e-3)
+    # except learning_rate (library default 1e-5) and per-epoch shuffling (default off).
     m = STG(task_type="classification", input_dim=Xtr.shape[1], output_dim=n_cls,
-            hidden_dims=list(args.stg_hidden), activation="tanh", optimizer="Adam",
-            learning_rate=args.stg_lr, batch_size=args.batch_size, feature_selection=True,
+            hidden_dims=list(args.stg_hidden), activation="relu", optimizer="Adam",
+            learning_rate=args.stg_lr, batch_size=100, feature_selection=True,
             sigma=0.5, lam=args.stg_lam, random_state=seed, device=device)
-    m.fit(Xtr, ytr, nr_epochs=args.stg_epochs, valid_X=Xva, valid_y=yva, print_interval=10 ** 9)
+    m.fit(Xtr, ytr, nr_epochs=args.stg_epochs, valid_X=Xva, valid_y=yva, verbose=False,
+          print_interval=10 ** 9, shuffle=True)
     mu = np.asarray(m.get_gates(mode="raw")).ravel()
-    pred = np.asarray(m.predict(Xte)).ravel()
+    m._model.to("cpu")  # stg 0.1.2 predict() feeds CPU tensors regardless of device
+    m.device = "cpu"
+    pred = np.asarray(m.predict(Xte, verbose=False)).ravel()
     own = float((pred == yte).mean())
     return np.argsort(-mu, kind="stable"), own, float("nan"), {}
 
@@ -215,7 +247,7 @@ def select_lassonet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
 def select_tabnet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
     from pytorch_tabnet.tab_model import TabNetClassifier
     set_seed(seed)
-    m = TabNetClassifier(seed=seed, device_name=device.type, verbose=0)
+    m = TabNetClassifier(seed=seed, device_name=device.type, verbose=0)  # library defaults
     m.fit(Xtr, ytr, eval_set=[(Xva, yva)], eval_metric=["accuracy"],
           max_epochs=args.tabnet_epochs, patience=args.tabnet_patience,
           batch_size=args.tabnet_batch, virtual_batch_size=min(128, args.tabnet_batch))
@@ -236,11 +268,11 @@ def main():
     ap.add_argument("--datasets", default="mice,mnist,fashion,isolet,coil20,activity")
     ap.add_argument("--methods", default="all_features,random,doenet,doenet_noortho,gated_mlp,stg,lassonet,tabnet")
     ap.add_argument("--k", type=int, default=50)
-    ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
+    ap.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4, 5])  # SA experiments.py
     ap.add_argument("--val_frac", type=float, default=0.1)
-    # DOENet / GatedMLP (repo defaults)
-    ap.add_argument("--epochs", type=int, default=100)
-    ap.add_argument("--batch_size", type=int, default=128)
+    # DOENet / GatedMLP (repo defaults, train_benchmark.py)
+    ap.add_argument("--epochs", type=int, default=80)
+    ap.add_argument("--batch_size", type=int, default=64)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--lambda_sparse", type=float, default=2e-3)
     ap.add_argument("--lambda_ortho", type=float, default=1e-2)
@@ -249,30 +281,36 @@ def main():
     ap.add_argument("--interaction_rank", type=int, default=16)
     # downstream
     ap.add_argument("--downstream", default="mlp", choices=["mlp", "extratrees"])
-    ap.add_argument("--ds_hidden", type=int, default=64)
-    ap.add_argument("--ds_epochs", type=int, default=100)
-    ap.add_argument("--ds_lr", type=float, default=1e-3)
-    ap.add_argument("--ds_batch", type=int, default=128)
+    ap.add_argument("--ds_hidden", type=int, default=67)          # SA deep_layers=67
+    ap.add_argument("--ds_epochs", type=int, default=100)         # fallback if dataset not in SA_EPOCHS_FIT
+    ap.add_argument("--ds_lrs", type=float, nargs="+", default=[1e-3, 3e-3, 1e-2])
+    ap.add_argument("--ds_batch", type=int, default=256)          # fallback if dataset not in SA_BATCH
     ap.add_argument("--et_trees", type=int, default=50)
+    ap.add_argument("--ds_device", default="cpu")  # tiny MLP: CPU is ~10x faster than the shared GPU
+    ap.add_argument("--ds_threads", type=int, default=1)
     # baselines (library / paper defaults)
-    ap.add_argument("--stg_hidden", type=int, nargs="+", default=[500, 50])
+    ap.add_argument("--stg_hidden", type=int, nargs="+", default=[400, 200])
     ap.add_argument("--stg_lr", type=float, default=1e-3)
-    ap.add_argument("--stg_lam", type=float, default=0.5)
+    ap.add_argument("--stg_lam", type=float, default=0.1)
     ap.add_argument("--stg_epochs", type=int, default=100)
     ap.add_argument("--lassonet_hidden", type=int, nargs="+", default=[100])
     ap.add_argument("--lassonet_M", type=float, default=10)
     ap.add_argument("--tabnet_epochs", type=int, default=100)
-    ap.add_argument("--tabnet_patience", type=int, default=20)
+    ap.add_argument("--tabnet_patience", type=int, default=10)
     ap.add_argument("--tabnet_batch", type=int, default=1024)
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ds_device = torch.device(args.ds_device)
+    torch.set_num_threads(args.ds_threads)
     done = set()
     if os.path.exists(args.out):
         for line in open(args.out):
             r = json.loads(line)
             done.add((r["dataset"], r["method"], r["seed"]))
-    print(f"device={device} done_cells={len(done)}", flush=True)
+    print(f"device={device} downstream_device={ds_device} done_cells={len(done)}", flush=True)
+    with open(args.out + ".config.json", "w") as f:
+        json.dump(vars(args), f, indent=1)
 
     selectors = {
         "doenet": lambda *a, **k: select_doenet(*a, **k, use_ortho=True),
@@ -305,10 +343,11 @@ def main():
                             Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed=seed)
                         cols = np.asarray(sel)[:args.k]
                     t_sel = time.time() - t0
-                    acc, ds_val = downstream_accuracy(Xtr[:, cols], ytr, Xva[:, cols], yva,
-                                                      Xte[:, cols], yte, n_cls, args, device, seed)
+                    acc, ds_val, ds_lr = downstream_accuracy(Xtr[:, cols], ytr, Xva[:, cols], yva,
+                                                             Xte[:, cols], yte, n_cls, args, ds_device, seed,
+                                                             ds_name=ds)
                     rec.update({"selected": [int(c) for c in cols][:args.k] if method != "all_features" else None,
-                                "downstream_test_acc": acc, "downstream_val_acc": ds_val,
+                                "downstream_test_acc": acc, "downstream_val_acc": ds_val, "downstream_lr": ds_lr,
                                 "own_test_acc": own, "own_val_acc": val,
                                 "time_select_s": t_sel, "time_total_s": time.time() - t0, **extra})
                 except Exception as e:
