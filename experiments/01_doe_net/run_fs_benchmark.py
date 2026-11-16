@@ -134,7 +134,8 @@ def downstream_accuracy(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed,
             m = _fit_mlp(Xt, yt, Xtr.shape[1], n_cls, lr, epochs, bs, args, device, seed)
             va = accuracy(predict_logits(m, Xva, device), yva)
             if va > best[0]:
-                best = (va, lr, accuracy(predict_logits(m, Xte, device), yte))
+                te = float("nan") if args.val_only else accuracy(predict_logits(m, Xte, device), yte)
+                best = (va, lr, te)
         return best[2], best[0], best[1]
     if args.downstream == "extratrees":
         from sklearn.ensemble import ExtraTreesClassifier
@@ -150,26 +151,47 @@ def temperature(epoch, max_epochs, t_start=0.66, t_min=0.1):
     return max(t_min, t_start * math.exp(decay * epoch))
 
 
-def train_gate_model(model, kind, Xtr, ytr, Xva, yva, args, device, seed):
+CONFIG = {}       # per-dataset hyper-parameter overrides (--config_json)
+PRECOMP = {}      # precomputed selections (--precomputed), key (method, dataset, seed)
+
+
+def resolve_hp(args, family, ds):
+    """Global args + per-dataset overrides for a method family ('doenet' | 'stg')."""
+    hp = dict(vars(args))
+    hp.update(CONFIG.get(family, {}).get(ds, {}))
+    return argparse.Namespace(**hp)
+
+
+def epochs_for(n_train, batch, base_epochs, min_steps):
+    """Pre-specified rule: at least `min_steps` optimizer steps (small datasets)."""
+    steps = max(1, n_train // batch)
+    return max(base_epochs, math.ceil(min_steps / steps))
+
+
+def _finite_list(a, nd=5):
+    return [round(float(v), nd) if np.isfinite(v) else None for v in np.asarray(a, dtype=float)]
+
+
+def train_gate_model(model, kind, Xtr, ytr, Xva, yva, hp, epochs, lambda_ortho, device, seed):
     """Train DOENet / GatedMLP with the repo's objective; keep best-val checkpoint."""
     set_seed(seed)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs, eta_min=1e-5)
+    opt = torch.optim.AdamW(model.parameters(), lr=hp.lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=1e-5)
     rng = np.random.RandomState(seed)
     Xt, yt = torch.from_numpy(Xtr).to(device), torch.from_numpy(ytr).to(device)
     best, best_state = -1.0, None
-    for ep in range(1, args.epochs + 1):
+    for ep in range(1, epochs + 1):
         model.train()
-        temp = temperature(ep, args.epochs)
-        for b in batches(len(Xtr), args.batch_size, True, rng):
+        temp = temperature(ep, epochs)
+        for b in batches(len(Xtr), hp.batch_size, True, rng):
             if len(b) < 2:
                 continue
             y_pred, _ = model(Xt[b], current_temperature=temp)
             if kind == "doenet":
-                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=args.lambda_sparse,
-                                        lambda_ortho=args.lambda_ortho)
+                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=hp.lambda_sparse,
+                                        lambda_ortho=lambda_ortho)
             else:
-                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=args.lambda_sparse)
+                ld = model.compute_loss(y_pred, yt[b], lambda_sparse=hp.lambda_sparse)
             opt.zero_grad()
             ld["total_loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -182,69 +204,113 @@ def train_gate_model(model, kind, Xtr, ytr, Xva, yva, args, device, seed):
     return best
 
 
-def select_doenet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, use_ortho):
+@torch.no_grad()
+def doenet_interpretation(m, ranking, device, k=50, n_feat=10, n_grid=21, n_pairs=10):
+    """Main-effect shape functions of the top features and the strongest pairwise
+    interactions among the top-k features (inputs are min-max scaled to [0, 1])."""
+    m.eval()
+    blk = m.anova_block
+    g_ = m.screening_gate
+    s = torch.sigmoid(g_.log_alpha)
+    g = torch.clamp(s * (g_.zeta - g_.gamma) + g_.gamma, 0.0, 1.0)
+    grid = torch.linspace(0, 1, n_grid, device=device)
+    shapes = []
+    for i in [int(v) for v in ranking[:n_feat]]:
+        h = torch.relu((grid * g[i]).unsqueeze(1) * blk.main_weight[i].unsqueeze(0) + blk.main_bias[i].unsqueeze(0))
+        f = (blk.main_out(h) - blk.main_running_mean[i].unsqueeze(0)) * g[i]       # (G, C)
+        shapes.append({"feature": i, "gate": round(float(g[i]), 4),
+                       "values": np.round(f.cpu().numpy(), 5).tolist()})
+    sel = torch.as_tensor([int(v) for v in ranking[:k]], device=device)
+    Us = blk.inter_u.weight[:, sel] * g[sel]                                            # (R, k)
+    Vs = blk.inter_v.weight[:, sel] * g[sel]
+    M = torch.einsum("cr,ri,rj->cij", blk.inter_head.weight, Us, Vs)                   # (C, k, k)
+    S = (0.5 * (M + M.transpose(1, 2))).pow(2).sum(0).sqrt()
+    iu = torch.triu_indices(len(sel), len(sel), 1, device=device)
+    vals = S[iu[0], iu[1]]
+    top = torch.topk(vals, min(n_pairs, vals.numel()))
+    pairs = [[int(sel[iu[0][t]]), int(sel[iu[1][t]]), round(float(v), 6)]
+             for v, t in zip(top.values.tolist(), top.indices.tolist())]
+    return {"main_effect_shapes": shapes, "top_interactions": pairs}
+
+
+def select_doenet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds, variant="full"):
+    """variant: 'full' | 'noortho' (W_proj not used, original architecture) |
+    'noorthoreg' (W_proj used, lambda_ortho = 0)."""
+    hp = resolve_hp(args, "doenet", ds)
+    epochs = epochs_for(len(ytr), hp.batch_size, hp.epochs, hp.min_steps)
+    lam_o = 0.0 if variant == "noorthoreg" else hp.lambda_ortho
     set_seed(seed)
-    m = DOENet(Xtr.shape[1], out_features=n_cls, num_factors=args.num_factors,
-               hidden_dim=args.hidden_dim, interaction_rank=args.interaction_rank,
-               task="classification", use_ortho_proj=use_ortho).to(device)
-    val = train_gate_model(m, "doenet", Xtr, ytr, Xva, yva, args, device, seed)
+    m = DOENet(Xtr.shape[1], out_features=n_cls, num_factors=hp.num_factors,
+               hidden_dim=hp.hidden_dim, interaction_rank=hp.interaction_rank,
+               task="classification", use_ortho_proj=(variant != "noortho")).to(device)
+    val = train_gate_model(m, "doenet", Xtr, ytr, Xva, yva, hp, epochs, lam_o, device, seed)
     info = m.get_feature_importance(threshold=0.1)
-    own = accuracy(predict_logits(m, Xte, device), yte)
-    extra = {"num_active_gates": int(info["num_active"])}
-    try:
-        extra["anova"] = m.get_anova_variance_decomposition(torch.from_numpy(Xte[:2048]).to(device))
-    except Exception as e:  # pragma: no cover
-        extra["anova_error"] = repr(e)
-    return np.asarray(info["sorted_indices"]), own, val, extra
+    ranking = np.asarray(info["sorted_indices"])
+    own = float("nan") if args.val_only else accuracy(predict_logits(m, Xte, device), yte)
+    extra = {"num_active_gates": int(info["num_active"]), "epochs": epochs,
+             "hp": {"lambda_sparse": hp.lambda_sparse, "lambda_ortho": lam_o, "lr": hp.lr,
+                    "batch_size": hp.batch_size},
+             "scores": _finite_list(info["log_alpha"])}
+    X_anova = Xva if args.val_only else Xte
+    extra["anova"] = m.get_anova_variance_decomposition(torch.from_numpy(X_anova[:2048]).to(device))
+    if args.interpret and variant == "full":
+        extra["interpretation"] = doenet_interpretation(m, ranking, device, k=args.k)
+    return ranking, own, val, extra
 
 
-def select_gated_mlp(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
+def select_gated_mlp(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds):
+    hp = resolve_hp(args, "doenet", ds)   # ablation: same sparsity / budget as DOENet
+    epochs = epochs_for(len(ytr), hp.batch_size, hp.epochs, hp.min_steps)
     set_seed(seed)
-    m = GatedMLP_Ablation(Xtr.shape[1], hidden_dim=args.hidden_dim, out_features=n_cls,
+    m = GatedMLP_Ablation(Xtr.shape[1], hidden_dim=hp.hidden_dim, out_features=n_cls,
                           task="classification").to(device)
-    val = train_gate_model(m, "gated_mlp", Xtr, ytr, Xva, yva, args, device, seed)
+    val = train_gate_model(m, "gated_mlp", Xtr, ytr, Xva, yva, hp, epochs, 0.0, device, seed)
     la = m.gate.log_alpha.detach().cpu().numpy()
-    own = accuracy(predict_logits(m, Xte, device), yte)
-    return np.argsort(-la, kind="stable"), own, val, {}
+    own = float("nan") if args.val_only else accuracy(predict_logits(m, Xte, device), yte)
+    return np.argsort(-la, kind="stable"), own, val, {
+        "epochs": epochs, "hp": {"lambda_sparse": hp.lambda_sparse}, "scores": _finite_list(la)}
 
 
-def select_stg(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
+def select_stg(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds):
     import collections
     import collections.abc
     for _n in ["Sequence", "Mapping", "Iterable", "Callable", "MutableMapping", "Set", "Hashable"]:
         setattr(collections, _n, getattr(collections.abc, _n))  # stg 0.1.2 on Python >= 3.10
     from stg import STG
+    hp = resolve_hp(args, "stg", ds)
+    epochs = epochs_for(len(ytr), 100, hp.stg_epochs, hp.min_steps)
     set_seed(seed)
-    # stg 0.1.2 defaults (hidden [400,200], relu, sigma 0.5, lam 0.1, batch 100, wd 1e-3)
-    # except learning_rate (library default 1e-5) and per-epoch shuffling (default off).
+    # stg 0.1.2 defaults (hidden [400,200], relu, sigma 0.5, batch 100, wd 1e-3) except
+    # learning_rate (library default 1e-5) and per-epoch shuffling (default off).
     m = STG(task_type="classification", input_dim=Xtr.shape[1], output_dim=n_cls,
-            hidden_dims=list(args.stg_hidden), activation="relu", optimizer="Adam",
-            learning_rate=args.stg_lr, batch_size=100, feature_selection=True,
-            sigma=0.5, lam=args.stg_lam, random_state=seed, device=device)
-    m.fit(Xtr, ytr, nr_epochs=args.stg_epochs, valid_X=Xva, valid_y=yva, verbose=False,
+            hidden_dims=list(hp.stg_hidden), activation="relu", optimizer="Adam",
+            learning_rate=hp.stg_lr, batch_size=100, feature_selection=True,
+            sigma=0.5, lam=hp.stg_lam, random_state=seed, device=device)
+    m.fit(Xtr, ytr, nr_epochs=epochs, valid_X=Xva, valid_y=yva, verbose=False,
           print_interval=10 ** 9, shuffle=True)
     mu = np.asarray(m.get_gates(mode="raw")).ravel()
     m._model.to("cpu")  # stg 0.1.2 predict() feeds CPU tensors regardless of device
     m.device = "cpu"
-    pred = np.asarray(m.predict(Xte, verbose=False)).ravel()
-    own = float((pred == yte).mean())
-    return np.argsort(-mu, kind="stable"), own, float("nan"), {}
+    own = float("nan")
+    if not args.val_only:
+        own = float((np.asarray(m.predict(Xte, verbose=False)).ravel() == yte).mean())
+    return np.argsort(-mu, kind="stable"), own, float("nan"), {
+        "epochs": epochs, "hp": {"lam": hp.stg_lam}, "scores": _finite_list(mu)}
 
 
-def select_lassonet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
+def select_lassonet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds):
     from lassonet import LassoNetClassifier
     set_seed(seed)
     m = LassoNetClassifier(hidden_dims=tuple(args.lassonet_hidden), M=args.lassonet_M,
                            random_state=seed, torch_seed=seed, device=device, verbose=0)
     path = m.path(Xtr, ytr, X_val=Xva, y_val=yva, return_state_dicts=False)
     imp = np.asarray(m.feature_importances_.cpu() if torch.is_tensor(m.feature_importances_)
-                     else m.feature_importances_)
-    # own accuracy: dense model at the start of the path is not stored; report best-val point
-    own = float("nan")
-    return np.argsort(-imp, kind="stable"), own, float("nan"), {"path_len": len(path)}
+                     else m.feature_importances_, dtype=float)
+    return np.argsort(-imp, kind="stable"), float("nan"), float("nan"), {
+        "path_len": len(path), "scores": _finite_list(imp)}
 
 
-def select_tabnet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
+def select_tabnet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed, ds):
     from pytorch_tabnet.tab_model import TabNetClassifier
     set_seed(seed)
     m = TabNetClassifier(seed=seed, device_name=device.type, verbose=0)  # library defaults
@@ -252,12 +318,21 @@ def select_tabnet(Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed):
           max_epochs=args.tabnet_epochs, patience=args.tabnet_patience,
           batch_size=args.tabnet_batch, virtual_batch_size=min(128, args.tabnet_batch))
     imp = np.asarray(m.feature_importances_)
-    own = float((m.predict(Xte) == yte).mean())
-    return np.argsort(-imp, kind="stable"), own, float("nan"), {}
+    own = float("nan") if args.val_only else float((m.predict(Xte) == yte).mean())
+    return np.argsort(-imp, kind="stable"), own, float("nan"), {"scores": _finite_list(imp)}
 
 
 def select_random(Xtr, *a, seed=0, **k):
     return np.random.RandomState(1000 + seed).permutation(Xtr.shape[1]), float("nan"), float("nan"), {}
+
+
+def make_precomputed(method):
+    """Selections produced outside this script (e.g. official Sequential Attention code)."""
+    def _sel(Xtr, *a, seed=0, ds=None, **k):
+        rec = PRECOMP[(method, ds, seed)]
+        return np.asarray(rec["selected"]), float("nan"), float("nan"), {
+            k2: v for k2, v in rec.items() if k2 not in ("method", "dataset", "seed", "selected")}
+    return _sel
 
 
 # ----------------------------------------------------------------------------- main
@@ -266,7 +341,7 @@ def main():
     ap.add_argument("--data_dir", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--datasets", default="mice,mnist,fashion,isolet,coil20,activity")
-    ap.add_argument("--methods", default="all_features,random,doenet,doenet_noortho,gated_mlp,stg,lassonet,tabnet")
+    ap.add_argument("--methods", default="all_features,random,doenet,doenet_noortho,doenet_noorthoreg,gated_mlp,stg,lassonet,tabnet")
     ap.add_argument("--k", type=int, default=50)
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4, 5])  # SA experiments.py
     ap.add_argument("--val_frac", type=float, default=0.1)
@@ -279,6 +354,12 @@ def main():
     ap.add_argument("--num_factors", type=int, default=24)
     ap.add_argument("--hidden_dim", type=int, default=64)
     ap.add_argument("--interaction_rank", type=int, default=16)
+    ap.add_argument("--min_steps", type=int, default=10000)  # epochs = max(epochs, ceil(min_steps/steps_per_epoch)); DOENet family + STG
+    # protocol v2
+    ap.add_argument("--config_json", default=None, help='per-dataset overrides {"doenet": {ds: {...}}, "stg": {ds: {...}}}')
+    ap.add_argument("--precomputed", default=None, help="JSONL with method, dataset, seed, selected (e.g. official SA code)")
+    ap.add_argument("--val_only", action="store_true", help="tuning mode: never evaluate on the test split")
+    ap.add_argument("--interpret", action="store_true", help="store DOENet main-effect shapes and top interactions")
     # downstream
     ap.add_argument("--downstream", default="mlp", choices=["mlp", "extratrees"])
     ap.add_argument("--ds_hidden", type=int, default=67)          # SA deep_layers=67
@@ -303,6 +384,12 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ds_device = torch.device(args.ds_device)
     torch.set_num_threads(args.ds_threads)
+    if args.config_json:
+        CONFIG.update(json.load(open(args.config_json)))
+    if args.precomputed:
+        for line in open(args.precomputed):
+            r = json.loads(line)
+            PRECOMP[(r["method"], r["dataset"], int(r["seed"]))] = r
     done = set()
     if os.path.exists(args.out):
         for line in open(args.out):
@@ -310,17 +397,20 @@ def main():
             done.add((r["dataset"], r["method"], r["seed"]))
     print(f"device={device} downstream_device={ds_device} done_cells={len(done)}", flush=True)
     with open(args.out + ".config.json", "w") as f:
-        json.dump(vars(args), f, indent=1)
+        json.dump({**vars(args), "config": CONFIG}, f, indent=1)
 
     selectors = {
-        "doenet": lambda *a, **k: select_doenet(*a, **k, use_ortho=True),
-        "doenet_noortho": lambda *a, **k: select_doenet(*a, **k, use_ortho=False),
+        "doenet": lambda *a, **k: select_doenet(*a, **k, variant="full"),
+        "doenet_noortho": lambda *a, **k: select_doenet(*a, **k, variant="noortho"),
+        "doenet_noorthoreg": lambda *a, **k: select_doenet(*a, **k, variant="noorthoreg"),
         "gated_mlp": select_gated_mlp,
         "stg": select_stg,
         "lassonet": select_lassonet,
         "tabnet": select_tabnet,
         "random": select_random,
     }
+    for (m_, _, _) in PRECOMP:
+        selectors.setdefault(m_, make_precomputed(m_))
 
     for ds in args.datasets.split(","):
         for seed in args.seeds:
@@ -333,14 +423,14 @@ def main():
                 rec = {"dataset": ds, "method": method, "seed": seed, "k": args.k,
                        "n_train": len(ytr), "n_val": len(yva), "n_test": len(yte),
                        "n_features": int(Xtr.shape[1]), "n_classes": n_cls,
-                       "downstream": args.downstream}
+                       "downstream": args.downstream, "val_only": bool(args.val_only)}
                 try:
                     if method == "all_features":
                         sel, own, val, extra = np.arange(Xtr.shape[1]), float("nan"), float("nan"), {}
                         cols = sel
                     else:
                         sel, own, val, extra = selectors[method](
-                            Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed=seed)
+                            Xtr, ytr, Xva, yva, Xte, yte, n_cls, args, device, seed=seed, ds=ds)
                         cols = np.asarray(sel)[:args.k]
                     t_sel = time.time() - t0
                     acc, ds_val, ds_lr = downstream_accuracy(Xtr[:, cols], ytr, Xva[:, cols], yva,
@@ -355,7 +445,7 @@ def main():
                 with open(args.out, "a") as f:
                     f.write(json.dumps(rec) + "\n")
                 msg = f"{ds:9s} {method:15s} seed={seed} " + (
-                    f"acc@k={rec['downstream_test_acc']:.4f} own={rec['own_test_acc']:.4f}"
+                    f"val@k={rec['downstream_val_acc']:.4f} test@k={rec['downstream_test_acc']:.4f}"
                     if "error" not in rec else f"ERROR {rec['error'][:120]}")
                 print(msg + f" ({rec['time_total_s']:.0f}s)", flush=True)
 

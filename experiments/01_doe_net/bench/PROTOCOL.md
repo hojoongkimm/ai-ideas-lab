@@ -74,4 +74,35 @@ A failed cell (exception) is retried once with the same settings; if it fails ag
 reported as missing with the error. Nothing is silently dropped.
 
 ## Change log
-- (none yet)
+### v2 — 2026-11-16, before any tuned or final result was produced
+Reason: make the comparison follow common practice in this literature (main competitors
+re-run in the same pipeline; proposed method and its closest competitor tuned on validation
+data) and add interpretability / contribution analyses.
+
+- **Pilot run stopped.** The v1 run with default settings (`runs/doenet_fs6_1116_1319_d13ad3a`)
+  was stopped after 30 cells. Its outputs are kept as a pilot and are not used for any decision
+  below; v2 decisions use validation data only.
+- **Validation-only tuning** (`bench/tune_val.py`): seed 1, validation split, criterion = downstream
+  validation accuracy of the top-50 features (same downstream protocol as §4); the test split is
+  never evaluated (`--val_only`). Ties go to the earlier grid point (defaults first).
+  - DOENet: λ_sparse ∈ {2e-3, 1e-2, 5e-2} × λ_ortho ∈ {1e-2, 1e-1} (6 points).
+  - STG: λ ∈ {0.1, 0.01, 0.5} (3 points; λ is STG's main hyper-parameter).
+  - Ablations (`doenet_noortho`, `doenet_noorthoreg`, `gated_mlp`) reuse DOENet's selected values;
+    they are not tuned separately.
+  - LassoNet (its path already sweeps the sparsity penalty; M = 10 as in the paper) and TabNet keep
+    library defaults.
+- **Minimum training length**, fixed rule for DOENet-family and STG:
+  `epochs = max(default_epochs, ceil(10000 / steps_per_epoch))` (affects only small datasets).
+- **New ablation** `doenet_noorthoreg`: orthogonal projection used, λ_ortho = 0
+  (separates the projection architecture from the orthogonality penalty).
+- **Official Sequential Attention code** (SA, Sequential LASSO, Group LASSO from
+  google-research/sequential_attention, TensorFlow on CPU) run on the same seed-wise splits with
+  the authors' per-dataset selection hyper-parameters; their 50 selected features are evaluated with
+  the downstream protocol of §4 (methods `sa`, `seql`, `gl`). Any deviation needed to run the code
+  is recorded here before those results are inspected.
+- **Interpretability outputs** (`--interpret`): full ranking scores of every method, DOENet ANOVA
+  variance shares on test inputs, main-effect shape functions of the top-10 features, and the 10
+  strongest pairwise interactions among the top-50 features.
+- **Additional pre-specified analyses**: selection stability across the 5 seeds (mean pairwise
+  Jaccard index of top-50 sets) and selected-pixel maps for MNIST / Fashion-MNIST.
+- Primary metric, downstream protocol, splits, seeds and statistical tests (§2, §4, §5) are unchanged.
