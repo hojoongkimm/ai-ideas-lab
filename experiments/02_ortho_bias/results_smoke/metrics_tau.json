@@ -1,0 +1,539 @@
+{
+  "oracle": [
+    {
+      "task": "main-d8-n1200-s0",
+      "family": "main",
+      "seed": 0,
+      "r2": NaN,
+      "rho": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ir": 0.0,
+      "gates": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "fit_time": 0.0,
+      "rho_star": [
+        0.8727276921272278,
+        0.01531634759157896,
+        4.1759051035978965e-18,
+        0.11195594072341919
+      ],
+      "corr_raw_max": 0.0,
+      "corr_exact_max": 0.0,
+      "corr_deploy_max": 0.0,
+      "corr_raw_mean": 0.0,
+      "corr_exact_mean": 0.0,
+      "corr_deploy_mean": 0.0,
+      "n_params": 0,
+      "err_block_l1": 0.0,
+      "err_ident_l1": 0.0,
+      "err_main": 0.0,
+      "err_pair": 0.0,
+      "err_high": 0.0,
+      "attrib_hi_to_h3": 0.0
+    },
+    {
+      "task": "pairwise-d8-n1200-s0",
+      "family": "pairwise",
+      "seed": 0,
+      "r2": NaN,
+      "rho": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ir": 0.0,
+      "gates": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "fit_time": 0.0,
+      "rho_star": [
+        0.08396697789430618,
+        0.8271500468254089,
+        0.014703124761581421,
+        0.07417986541986465
+      ],
+      "corr_raw_max": 0.0,
+      "corr_exact_max": 0.0,
+      "corr_deploy_max": 0.0,
+      "corr_raw_mean": 0.0,
+      "corr_exact_mean": 0.0,
+      "corr_deploy_mean": 0.0,
+      "n_params": 0,
+      "err_block_l1": 0.0,
+      "err_ident_l1": 0.0,
+      "err_main": 0.0,
+      "err_pair": 0.0,
+      "err_high": 0.0,
+      "attrib_hi_to_h3": 0.0
+    },
+    {
+      "task": "tree-d8-n1200-s0",
+      "family": "tree",
+      "seed": 0,
+      "r2": NaN,
+      "rho": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ir": 0.0,
+      "gates": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "fit_time": 0.0,
+      "rho_star": [
+        0.052084073424339294,
+        0.1412704735994339,
+        1.916107640697435e-18,
+        0.8066454529762268
+      ],
+      "corr_raw_max": 0.0,
+      "corr_exact_max": 0.0,
+      "corr_deploy_max": 0.0,
+      "corr_raw_mean": 0.0,
+      "corr_exact_mean": 0.0,
+      "corr_deploy_mean": 0.0,
+      "n_params": 0,
+      "err_block_l1": 0.0,
+      "err_ident_l1": 0.0,
+      "err_main": 0.0,
+      "err_pair": 0.0,
+      "err_high": 0.0,
+      "attrib_hi_to_h3": 0.0
+    },
+    {
+      "task": "deep-d8-n1200-s0",
+      "family": "deep",
+      "seed": 0,
+      "r2": NaN,
+      "rho": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ir": 0.0,
+      "gates": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "fit_time": 0.0,
+      "rho_star": [
+        0.11957133561372757,
+        0.44926226139068604,
+        2.1191010717403982e-18,
+        0.4311663806438446
+      ],
+      "corr_raw_max": 0.0,
+      "corr_exact_max": 0.0,
+      "corr_deploy_max": 0.0,
+      "corr_raw_mean": 0.0,
+      "corr_exact_mean": 0.0,
+      "corr_deploy_mean": 0.0,
+      "n_params": 0,
+      "err_block_l1": 0.0,
+      "err_ident_l1": 0.0,
+      "err_main": 0.0,
+      "err_pair": 0.0,
+      "err_high": 0.0,
+      "attrib_hi_to_h3": 0.0
+    },
+    {
+      "task": "hybrid-d8-n1200-s0",
+      "family": "hybrid",
+      "seed": 0,
+      "r2": NaN,
+      "rho": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ir": 0.0,
+      "gates": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "fit_time": 0.0,
+      "rho_star": [
+        0.4216403067111969,
+        0.3990092873573303,
+        1.7995952809524008e-17,
+        0.17935039103031158
+      ],
+      "corr_raw_max": 0.0,
+      "corr_exact_max": 0.0,
+      "corr_deploy_max": 0.0,
+      "corr_raw_mean": 0.0,
+      "corr_exact_mean": 0.0,
+      "corr_deploy_mean": 0.0,
+      "n_params": 0,
+      "err_block_l1": 0.0,
+      "err_ident_l1": 0.0,
+      "err_main": 0.0,
+      "err_pair": 0.0,
+      "err_high": 0.0,
+      "attrib_hi_to_h3": 0.0
+    }
+  ],
+  "ablations": [],
+  "tau": [
+    {
+      "task": "main-d8-n1200-s0",
+      "family": "main",
+      "seed": 0,
+      "tau": 0.7,
+      "r2": 0.8878784775733948,
+      "ir": 0.9897374510765076,
+      "gates": [
+        1.0,
+        0.6645327806472778,
+        0.30554869771003723,
+        0.40913596749305725
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.9833409786224365,
+        0.0018165219807997346,
+        0.004580009263008833,
+        0.010262513533234596
+      ]
+    },
+    {
+      "task": "main-d8-n1200-s0",
+      "family": "main",
+      "seed": 0,
+      "tau": 0.9,
+      "r2": 0.8761285543441772,
+      "ir": 0.9955642223358154,
+      "gates": [
+        1.0,
+        0.6596284508705139,
+        0.31373071670532227,
+        0.40923330187797546
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.9863203167915344,
+        0.001977319363504648,
+        0.007266624830663204,
+        0.004435792565345764
+      ]
+    },
+    {
+      "task": "pairwise-d8-n1200-s0",
+      "family": "pairwise",
+      "seed": 0,
+      "tau": 0.7,
+      "r2": 0.7542310357093811,
+      "ir": 0.9807983040809631,
+      "gates": [
+        1.0,
+        0.5227934122085571,
+        0.23092982172966003,
+        0.2693859338760376
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.1631097048521042,
+        0.8065582513809204,
+        0.011130264960229397,
+        0.01920175366103649
+      ]
+    },
+    {
+      "task": "pairwise-d8-n1200-s0",
+      "family": "pairwise",
+      "seed": 0,
+      "tau": 0.9,
+      "r2": 0.8083456754684448,
+      "ir": 0.9522446393966675,
+      "gates": [
+        1.0,
+        0.524165689945221,
+        0.2299429178237915,
+        0.2649851143360138
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.1459411382675171,
+        0.7961419820785522,
+        0.010161452926695347,
+        0.04775542393326759
+      ]
+    },
+    {
+      "task": "tree-d8-n1200-s0",
+      "family": "tree",
+      "seed": 0,
+      "tau": 0.7,
+      "r2": 0.5122091174125671,
+      "ir": 0.8044536113739014,
+      "gates": [
+        1.0,
+        0.7325428128242493,
+        0.4200665056705475,
+        0.538221001625061
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.1390553116798401,
+        0.035701483488082886,
+        0.6296968460083008,
+        0.19554638862609863
+      ]
+    },
+    {
+      "task": "tree-d8-n1200-s0",
+      "family": "tree",
+      "seed": 0,
+      "tau": 0.9,
+      "r2": 0.4473046660423279,
+      "ir": 0.47663626074790955,
+      "gates": [
+        1.0,
+        0.7371619343757629,
+        0.42708006501197815,
+        0.546461820602417
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.13311129808425903,
+        0.03794332966208458,
+        0.305581659078598,
+        0.5233637094497681
+      ]
+    },
+    {
+      "task": "deep-d8-n1200-s0",
+      "family": "deep",
+      "seed": 0,
+      "tau": 0.7,
+      "r2": 0.723752498626709,
+      "ir": 0.630587637424469,
+      "gates": [
+        1.0,
+        0.6753970384597778,
+        0.3466510772705078,
+        0.469065397977829
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.17257416248321533,
+        0.27346619963645935,
+        0.18454724550247192,
+        0.3694123923778534
+      ]
+    },
+    {
+      "task": "deep-d8-n1200-s0",
+      "family": "deep",
+      "seed": 0,
+      "tau": 0.9,
+      "r2": 0.8083202242851257,
+      "ir": 0.40207716822624207,
+      "gates": [
+        1.0,
+        0.6775182485580444,
+        0.3489951491355896,
+        0.4702991545200348
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.11290667951107025,
+        0.18296460807323456,
+        0.10620587319135666,
+        0.5979228019714355
+      ]
+    },
+    {
+      "task": "hybrid-d8-n1200-s0",
+      "family": "hybrid",
+      "seed": 0,
+      "tau": 0.7,
+      "r2": 0.745678186416626,
+      "ir": 0.9918734431266785,
+      "gates": [
+        1.0,
+        0.6411103010177612,
+        0.3108895421028137,
+        0.40330812335014343
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.6915994882583618,
+        0.2872883081436157,
+        0.012985587120056152,
+        0.008126558735966682
+      ]
+    },
+    {
+      "task": "hybrid-d8-n1200-s0",
+      "family": "hybrid",
+      "seed": 0,
+      "tau": 0.9,
+      "r2": 0.7744823694229126,
+      "ir": 0.9803898334503174,
+      "gates": [
+        1.0,
+        0.6401442885398865,
+        0.31340035796165466,
+        0.400339275598526
+      ],
+      "pruned": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "rho": [
+        0.6847475171089172,
+        0.2766053378582001,
+        0.01903693377971649,
+        0.01961016096174717
+      ]
+    }
+  ],
+  "extra": {
+    "config": {
+      "smoke": true,
+      "families": [
+        "main",
+        "pairwise",
+        "tree",
+        "deep",
+        "hybrid"
+      ],
+      "seeds": [
+        0
+      ],
+      "n_train": 1200,
+      "d": 8,
+      "noise": 0.1,
+      "epochs": 60,
+      "batch": 256,
+      "lr": 0.003,
+      "lr_deep": 0.001,
+      "calibrate": false,
+      "n_bins": 8,
+      "trees": 16,
+      "tree_depth": 4,
+      "hidden": 96,
+      "res_blocks": 2,
+      "max_pairs": 4,
+      "lam_l0": 0.001,
+      "lam_mdl": 0.001,
+      "lam_ortho": 0.01,
+      "taus": [
+        0.7,
+        0.9
+      ],
+      "no_staging": false,
+      "ablations": true,
+      "tau_sweep": true,
+      "check_invariance": true,
+      "prune_check": true,
+      "prune_tol": 0.3,
+      "skip_baselines": true,
+      "only": "tau",
+      "baselines_only": false,
+      "profiler": "checkpoints/profiler_smoke.pt",
+      "out": "results_smoke"
+    }
+  }
+}

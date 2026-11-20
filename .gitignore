@@ -111,3 +111,7 @@ lightning_logs/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Experiment code that lives under a "datasets/" module directory (code, not data)
+!experiments/02_ortho_bias/datasets/
+!experiments/02_ortho_bias/datasets/*.py
