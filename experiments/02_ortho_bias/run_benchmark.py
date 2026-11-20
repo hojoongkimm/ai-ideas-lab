@@ -334,7 +334,8 @@ def write_tables(rows: List[Dict], abl: List[Dict], tau_rows: List[Dict], args, 
     tex = []
 
     fams = [f for f in FAMILIES if any(r["family"] == f for r in rows)]
-    base_names = [k[3:] for k in rows[0] if k.startswith("r2_") and k != "r2"] if rows else []
+    base_names = [k[3:] for k in rows[0]
+                  if k.startswith("r2_") and k[3:]] if rows else []
 
     md.append("## 1. Oracle recovery and predictive accuracy\n")
     base_hdr = (" | ".join(base_names) + " | ") if base_names else ""

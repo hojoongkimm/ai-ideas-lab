@@ -46,8 +46,6 @@ configuration: {
   "out": "results_smoke"
 }
 
-
-
 ## 1. Oracle recovery and predictive accuracy
 
 | family | R2 OrthoBias | err(ident) | err(main) | err(pair) | err(high) | attribution H3 |
@@ -98,6 +96,21 @@ Ground-truth reference shares (first seed of each family):
 | tree | no-ortho | 0.513 | 0.216 | 0.678 | 0.718 |
 | tree | no-meta | 0.562 | 0.319 | 0.970 | 0.332 |
 
+## 4. Interpretability constraint sweep
+
+| family | tau | R2 | IR | pruned blocks |
+|---|---|---|---|---|
+| deep | 0.70 | 0.724 | 0.631 | 0.000 |
+| deep | 0.90 | 0.808 | 0.402 | 0.000 |
+| hybrid | 0.70 | 0.746 | 0.992 | 0.000 |
+| hybrid | 0.90 | 0.774 | 0.980 | 0.000 |
+| main | 0.70 | 0.888 | 0.990 | 0.000 |
+| main | 0.90 | 0.876 | 0.996 | 0.000 |
+| pairwise | 0.70 | 0.754 | 0.981 | 0.000 |
+| pairwise | 0.90 | 0.808 | 0.952 | 0.000 |
+| tree | 0.70 | 0.512 | 0.804 | 0.000 |
+| tree | 0.90 | 0.447 | 0.477 | 0.000 |
+
 ## 5. Exact-zero block pruning (linear target, only H1 needed)
 
 - gate parameters alpha: [1.55, -10.0, 1.45, 1.43]
@@ -121,18 +134,3 @@ Ground-truth reference shares (first seed of each family):
 | tree | 0.292 | 0.425 | -0.011 | 0.708 |
 | deep | 0.978 | 0.965 | 0.012 | 0.687 |
 | hybrid | 0.917 | 0.895 | 0.459 | 0.853 |
-
-## 4. Interpretability constraint sweep
-
-| family | tau | R2 | IR | pruned blocks |
-|---|---|---|---|---|
-| deep | 0.70 | 0.724 | 0.631 | 0.000 |
-| deep | 0.90 | 0.808 | 0.402 | 0.000 |
-| hybrid | 0.70 | 0.746 | 0.992 | 0.000 |
-| hybrid | 0.90 | 0.774 | 0.980 | 0.000 |
-| main | 0.70 | 0.888 | 0.990 | 0.000 |
-| main | 0.90 | 0.876 | 0.996 | 0.000 |
-| pairwise | 0.70 | 0.754 | 0.981 | 0.000 |
-| pairwise | 0.90 | 0.808 | 0.952 | 0.000 |
-| tree | 0.70 | 0.512 | 0.804 | 0.000 |
-| tree | 0.90 | 0.447 | 0.477 | 0.000 |
